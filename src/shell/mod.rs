@@ -92,6 +92,12 @@ pub fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn escape_preserves_normal() {
@@ -105,6 +111,7 @@ mod tests {
 
     #[test]
     fn emitter_disabled_by_default() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var(ENV);
         let e = Emitter::from_env();
         assert!(!e.enabled());
@@ -112,6 +119,7 @@ mod tests {
 
     #[test]
     fn emitter_enabled_when_env_set() {
+        let _guard = env_lock().lock().unwrap();
         std::env::set_var(ENV, "1");
         let e = Emitter::from_env();
         assert!(e.enabled());
