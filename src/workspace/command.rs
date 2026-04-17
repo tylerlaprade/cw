@@ -1,5 +1,6 @@
 use crate::cli::{RemoveArgs, WorkspaceAction, WorkspaceArgs};
 use crate::config::{self, Config};
+use crate::git::github;
 use crate::shell::{Emitter, Record};
 use crate::workspace::{create, resolve};
 use anyhow::{Context, Result};
@@ -31,6 +32,11 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
 
     // Try to resolve the head as an existing target first (non-fatal on fail).
     let resolved = resolve::resolve(&cfg, &cwd, Some(&head)).ok();
+    let create_from_pr = if resolved.is_none() {
+        pr_target(&cfg, &head)?
+    } else {
+        None
+    };
 
     let flags = LaunchFlags {
         stack,
@@ -45,7 +51,9 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // No existing target — create a fresh workspace with `head` as
             // description / branch name. If there was tail text, it becomes
             // the Claude prompt.
-            let subject = if flags.prompt.is_some() {
+            let subject = if let Some(pr_target) = &create_from_pr {
+                pr_target.branch.clone()
+            } else if flags.prompt.is_some() {
                 // head + tail was a full description; recombine.
                 positional.join(" ")
             } else {
@@ -76,7 +84,9 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 &cfg,
                 resolved,
                 LaunchFlags {
-                    prompt: None,
+                    pr_override: flags
+                        .pr_override
+                        .or(create_from_pr.as_ref().map(|target| target.number)),
                     ..flags
                 },
                 emitter,
@@ -162,7 +172,7 @@ struct LaunchFlags {
 }
 
 fn enter_workspace(
-    _cfg: &Config,
+    cfg: &Config,
     r: resolve::Resolved,
     flags: LaunchFlags,
     emitter: &mut Emitter,
@@ -171,6 +181,10 @@ fn enter_workspace(
     emitter.emit(Record::Cd(&r.dir.to_string_lossy()));
     if let Some(n) = r.number {
         emitter.emit(Record::Title(&format!("#{}", n)));
+    }
+    if let Some(hook) = &cfg.hooks.post_cd {
+        let argv = vec!["bash".into(), "-lc".into(), post_cd_command(&r, hook)];
+        emitter.emit(Record::Exec(&argv));
     }
 
     // Decide what to launch (claude | codex | nothing).
@@ -261,4 +275,51 @@ fn print_help() {
     eprintln!("       cw -s <description>                  # stack on current branch");
     eprintln!("       cw <N> --continue                    # resume Claude session");
     eprintln!("       cw <N> --pr <N>                      # force PR association");
+}
+
+struct PrTarget {
+    number: u32,
+    branch: String,
+}
+
+fn pr_target(cfg: &Config, token: &str) -> Result<Option<PrTarget>> {
+    let Ok(number) = token.parse::<u32>() else {
+        return Ok(None);
+    };
+    let Some(root) = cfg.runtime.repo_root.as_deref() else {
+        return Ok(None);
+    };
+    let pr = match github::view_pr(root, number) {
+        Ok(pr) => pr,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(PrTarget {
+        number,
+        branch: pr.head_branch,
+    }))
+}
+
+fn post_cd_command(r: &resolve::Resolved, hook: &str) -> String {
+    let mut parts = vec![format!(
+        "export DEVCLI_DIR={}",
+        shell_quote(&r.dir.to_string_lossy())
+    )];
+    if let Some(branch) = &r.branch {
+        parts.push(format!("export DEVCLI_BRANCH={}", shell_quote(branch)));
+    }
+    if let Some(number) = r.number {
+        parts.push(format!("export DEVCLI_NUMBER={number}"));
+    }
+    parts.push(hook.to_string());
+    parts.join("; ")
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+@=,:".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
