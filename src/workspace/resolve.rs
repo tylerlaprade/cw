@@ -1,38 +1,42 @@
 //! Resolve a user-supplied target (N | PR# | branch | bare cwd) to a
 //! concrete workspace directory + number + branch.
 //!
-//! Step 2 handles the bare case (no target, derive from cwd). PR/branch
-//! resolution lands in step 3.
+//! Heuristic: any numeric token ≤ max_count (or ≤ 99 when unset) is treated
+//! as a workspace number; otherwise as a PR number (and, if local matching
+//! fails, as a branch name).
 
 use crate::config::Config;
+use crate::git::{github, worktree};
 use crate::util::paths;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// A resolved workspace reference.
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub dir: PathBuf,
     pub number: Option<u32>,
     pub branch: Option<String>,
+    pub pr: Option<u32>,
 }
 
-/// Resolve `target` against the current config. When `target` is None, the
-/// resolver derives from the current cwd.
 pub fn resolve(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<Resolved> {
     let Some(t) = target else {
         return resolve_cwd(cfg, cwd);
     };
 
-    // Numeric target = workspace number.
     if let Ok(n) = t.parse::<u32>() {
-        return resolve_number(cfg, n);
+        let cap = cfg.workspace.max_count.unwrap_or(99);
+        if n <= cap {
+            if let Some(r) = try_number(cfg, n) {
+                return Ok(r);
+            }
+            // Numeric but no workspace exists at that number → fall through
+            // and try as PR.
+        }
+        return resolve_pr(cfg, n);
     }
 
-    // Otherwise, treat as branch name (PR resolution lands in step 3).
-    Err(anyhow::anyhow!(
-        "PR / branch target resolution lands in step 3 (got: {t})"
-    ))
+    resolve_branch(cfg, t)
 }
 
 fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
@@ -40,31 +44,68 @@ fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
     let dir = if number.is_some() {
         cwd.to_path_buf()
     } else {
-        // Outside a numbered workspace: fall back to the repo root.
         cfg.runtime
             .repo_root
             .clone()
             .unwrap_or_else(|| cwd.to_path_buf())
     };
     let branch = current_branch(&dir);
-    Ok(Resolved { dir, number, branch })
+    let pr = branch
+        .as_deref()
+        .and_then(|b| github::pr_for_branch(&dir, b));
+    Ok(Resolved {
+        dir,
+        number,
+        branch,
+        pr,
+    })
 }
 
-fn resolve_number(cfg: &Config, n: u32) -> Result<Resolved> {
-    let root = cfg
+fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
+    let root = cfg.runtime.repo_root.as_deref()?;
+    let parent = root.parent()?;
+    let dir = parent.join(format!("{}_{}", cfg.runtime.stem, n));
+    if !dir.is_dir() {
+        return None;
+    }
+    let branch = current_branch(&dir);
+    let pr = branch.as_deref().and_then(|b| github::pr_for_branch(&dir, b));
+    Some(Resolved {
+        number: Some(n),
+        dir,
+        branch,
+        pr,
+    })
+}
+
+fn resolve_pr(cfg: &Config, num: u32) -> Result<Resolved> {
+    let inside = cfg
         .runtime
         .repo_root
         .as_deref()
         .context("no repo root discovered")?;
-    let parent = root.parent().context("repo root has no parent")?;
-    let dir = parent.join(format!("{}_{}", cfg.runtime.stem, n));
-    if !dir.is_dir() {
-        anyhow::bail!("workspace {} not found at {}", n, dir.display());
-    }
+    let pr = github::view_pr(inside, num)
+        .with_context(|| format!("resolving PR #{num} via gh"))?;
+    let mut r = resolve_branch(cfg, &pr.head_branch)?;
+    r.pr = Some(num);
+    Ok(r)
+}
+
+fn resolve_branch(cfg: &Config, branch: &str) -> Result<Resolved> {
+    let inside = cfg
+        .runtime
+        .repo_root
+        .as_deref()
+        .context("no repo root discovered")?;
+    let wt = worktree::find_for_branch(inside, branch)?
+        .with_context(|| format!("no worktree checking out branch {branch}"))?;
+    let number = paths::detect_number(&wt.dir, &cfg.runtime.stem);
+    let pr = github::pr_for_branch(&wt.dir, branch);
     Ok(Resolved {
-        number: Some(n),
-        branch: current_branch(&dir),
-        dir,
+        dir: wt.dir,
+        number,
+        branch: Some(branch.to_string()),
+        pr,
     })
 }
 
