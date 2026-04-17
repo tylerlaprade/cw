@@ -1,6 +1,6 @@
 //! Jira ticket fetching via `acli`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -25,12 +25,13 @@ pub fn my_actionable_tickets(project: &str) -> Result<Vec<Ticket>> {
             "key,summary,status",
             "--json",
         ])
-        .output();
-    let Ok(out) = out else {
-        return Ok(Vec::new());
-    };
+        .output()
+        .context("acli jira workitem search")?;
     if !out.status.success() {
-        return Ok(Vec::new());
+        anyhow::bail!(
+            "acli jira workitem search failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(parse_acli_json(&String::from_utf8_lossy(&out.stdout)))
 }
