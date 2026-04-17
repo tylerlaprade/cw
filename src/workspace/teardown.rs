@@ -2,6 +2,7 @@
 
 use crate::config::{schema::DatabasesCfg, Config};
 use crate::shell::{Emitter, Record};
+use crate::util::paths;
 use crate::workspace::resolve;
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
@@ -59,8 +60,18 @@ impl Flag {
 
 pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Emitter) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let targets = if targets.is_empty() {
+        match paths::detect_number(&cwd, &cfg.runtime.stem) {
+            Some(n) => vec![n.to_string()],
+            None => anyhow::bail!(
+                "`cw remove` requires one or more targets unless run from inside a numbered workspace"
+            ),
+        }
+    } else {
+        targets.to_vec()
+    };
     let mut plans = Vec::new();
-    for t in targets {
+    for t in &targets {
         let r = resolve::resolve(cfg, &cwd, Some(t))?;
         let Some(n) = r.number else {
             eprintln!(
@@ -127,6 +138,16 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
                 "{} #{} skipped (blocking flags; pass --force to override)",
                 "✗".red(),
                 p.number
+            );
+            continue;
+        }
+
+        if let Err(e) = run_pre_remove_hook(cfg, p) {
+            eprintln!(
+                "{} #{} pre-remove hook failed: {:#}",
+                "✗".red(),
+                p.number,
+                e
             );
             continue;
         }
@@ -291,6 +312,36 @@ fn drop_one(name: &str) {
         Ok(s) if s.success() => println!("{} dropdb {}", "·".dimmed(), name),
         _ => {}
     }
+}
+
+fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
+    let Some(hook) = &cfg.hooks.pre_remove else {
+        return Ok(());
+    };
+    let current_dir = if p.dir.is_dir() {
+        p.dir.as_path()
+    } else {
+        cfg.runtime
+            .repo_root
+            .as_deref()
+            .unwrap_or_else(|| p.dir.as_path())
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg("-lc")
+        .arg(hook)
+        .current_dir(current_dir)
+        .env("DEVCLI_DIR", &p.dir)
+        .env("DEVCLI_NUMBER", p.number.to_string());
+    if let Some(branch) = &p.branch {
+        cmd.env("DEVCLI_BRANCH", branch);
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("running pre-remove hook in {}", current_dir.display()))?;
+    if !status.success() {
+        anyhow::bail!("hook exited with status {}", status.code().unwrap_or(-1));
+    }
+    Ok(())
 }
 
 fn remove_workspace_dir(_cfg: &Config, p: &Plan) -> Result<()> {
