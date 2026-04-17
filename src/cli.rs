@@ -50,6 +50,11 @@ pub enum Command {
     Workspace(WorkspaceArgs),
     /// Interactive scaffolder for .devcli.toml (minimum overrides).
     Init,
+    /// Emit shell completions for the given shell.
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
     /// Default dispatcher: bare `cw <description|N|PR#|branch>`.
     #[command(external_subcommand)]
     Default(Vec<String>),

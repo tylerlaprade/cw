@@ -165,7 +165,7 @@ pub fn remove(args: RemoveArgs, emitter: &mut Emitter) -> Result<()> {
 
 pub fn dispatch(args: WorkspaceArgs, emitter: &mut Emitter) -> Result<()> {
     match args.action {
-        WorkspaceAction::List => Err(anyhow::anyhow!("`cw workspace list` lands in step 11")),
+        WorkspaceAction::List => do_list(),
         WorkspaceAction::Resolve { target, json } => do_resolve(&target, json, emitter),
         WorkspaceAction::NextNumber => do_next_number(),
     }
@@ -184,6 +184,65 @@ fn do_next_number() -> Result<()> {
     lock.release();
     println!("{}", n);
     Ok(())
+}
+
+fn do_list() -> Result<()> {
+    use owo_colors::OwoColorize;
+    let cwd = std::env::current_dir()?;
+    let cfg = config::discover::load(&cwd)?;
+    let entries = crate::workspace::inventory::list_workspaces(&cfg)?;
+    println!(
+        "{:>3}  {:<30}  {:<22}  {}",
+        "N".bold(),
+        "branch".bold(),
+        "dir".bold(),
+        "flags".bold()
+    );
+    for e in &entries {
+        let n = e
+            .number
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".into());
+        let branch = e.branch.clone().unwrap_or_else(|| "(detached)".into());
+        let dir = e
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut flags = Vec::new();
+        if e.merged {
+            flags.push("merged".yellow().to_string());
+        }
+        if e.remote_gone {
+            flags.push("remote-gone".yellow().to_string());
+        }
+        if e.detached {
+            flags.push("detached".dimmed().to_string());
+        }
+        if e.no_unique_commits {
+            flags.push("no-unique".dimmed().to_string());
+        }
+        if let Some(pr) = e.pr_closed_or_merged {
+            flags.push(format!("pr#{pr} gone").yellow().to_string());
+        }
+        println!(
+            "{:>3}  {:<30}  {:<22}  {}",
+            n,
+            truncate(&branch, 30),
+            dir,
+            flags.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
 }
 
 // --- internals ------------------------------------------------------------
