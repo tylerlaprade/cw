@@ -180,11 +180,11 @@ fn in_path(bin: &str) -> bool {
 
 fn gt_track(dir: &Path, parent_branch: &str) -> Result<()> {
     let st = Command::new("gt")
-        .args(["branch", "track", "--parent", parent_branch])
+        .args(["track", "--parent", parent_branch])
         .current_dir(dir)
         .status();
     if let Err(e) = st {
-        eprintln!("warn: gt branch track failed: {e:#}");
+        eprintln!("warn: gt track failed: {e:#}");
     }
     Ok(())
 }
@@ -410,3 +410,133 @@ fn shell_quote(s: &str) -> String {
 // Silence unused re-exports until wired in step 5.
 #[allow(dead_code)]
 fn _use_marker(_: &EnvStrip, _: &EnvInject) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::{Config, Runtime, WorkspaceCfg};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn create_registers_new_worktree_with_gt_track() {
+        let _guard = env_lock().lock().unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("source");
+        let mock_bin = temp.path().join("bin");
+        let gt_log = temp.path().join("gt.log");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&mock_bin).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let mut new_path = std::env::split_paths(&original_path.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        new_path.insert(0, mock_bin.clone());
+        std::env::set_var("PATH", std::env::join_paths(new_path).unwrap());
+
+        let gt = mock_bin.join("gt");
+        fs::write(
+            &gt,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                gt_log.display()
+            ),
+        )
+        .unwrap();
+        chmod_x(&gt);
+
+        init_git_repo(&root);
+
+        let stem = temp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let cfg = Config {
+            workspace: WorkspaceCfg {
+                max_count: Some(48),
+                base_branch: None,
+                stem: None,
+            },
+            integrations: crate::config::schema::Integrations {
+                graphite: Some(true),
+                github: None,
+                claude: None,
+                codex: None,
+                direnv: None,
+                acli: None,
+            },
+            services: Vec::new(),
+            deps: None,
+            databases: None,
+            restack: Default::default(),
+            hooks: Default::default(),
+            env: Default::default(),
+            runtime: Runtime {
+                repo_root: Some(root.clone()),
+                config_path: None,
+                stem: stem.clone(),
+                base_branch: "develop".into(),
+            },
+        };
+
+        let result = create(
+            &cfg,
+            &root,
+            CreateOpts {
+                subject: "feature/foo".into(),
+                stack: false,
+                parent: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.number, 1);
+        assert_eq!(result.branch, "feature/foo");
+        assert_eq!(result.dir, temp.path().join(format!("{stem}_1")));
+        assert!(result.dir.is_dir());
+        assert_eq!(
+            fs::read_to_string(&gt_log).unwrap().trim(),
+            "track --parent develop"
+        );
+
+        match original_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    fn init_git_repo(root: &Path) {
+        git(root, ["init", "--initial-branch=develop"]);
+        git(root, ["config", "user.email", "test@example.com"]);
+        git(root, ["config", "user.name", "Test User"]);
+        git(root, ["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README.md"), "root\n").unwrap();
+        git(root, ["add", "README.md"]);
+        git(root, ["commit", "-m", "root"]);
+    }
+
+    fn git<const N: usize>(root: &Path, args: [&str; N]) {
+        let status = Command::new("git").args(args).current_dir(root).status().unwrap();
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    fn chmod_x(path: &PathBuf) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut perms = fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).unwrap();
+        }
+    }
+}
