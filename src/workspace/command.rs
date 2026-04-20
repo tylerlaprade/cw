@@ -304,7 +304,7 @@ fn enter_workspace(
         emitter.emit(Record::Title(&format!("#{}", n)));
     }
     if let Some(hook) = &cfg.hooks.post_cd {
-        let argv = vec!["bash".into(), "-lc".into(), post_cd_command(&r, hook)];
+        let argv = vec!["bash".into(), "-c".into(), post_cd_command(&r, hook)];
         emitter.emit(Record::Exec(&argv));
     }
 

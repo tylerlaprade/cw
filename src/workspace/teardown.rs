@@ -469,7 +469,7 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
             .unwrap_or_else(|| p.dir.as_path())
     };
     let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
+    cmd.arg("-c")
         .arg(hook)
         .current_dir(current_dir)
         .env("DEVCLI_DIR", &p.dir)
