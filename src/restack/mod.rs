@@ -2,7 +2,7 @@
 
 pub mod resolvers;
 
-use crate::cli::RestackArgs;
+use crate::cli::{ResolveArgs, RestackArgs};
 use crate::config::{self, Config};
 use crate::shell::{Emitter, Record};
 use crate::workspace::resolve;
@@ -339,13 +339,32 @@ fn run_hook(hook: &Path, dir: &Path, files: &[PathBuf]) -> Result<()> {
 }
 
 fn pick_resolver(cfg: &Config, args: &RestackArgs) -> resolvers::Kind {
-    if let Some(r) = args.resolver.as_deref() {
+    resolver_from(args.resolver.as_deref(), cfg)
+}
+
+fn resolver_from(override_: Option<&str>, cfg: &Config) -> resolvers::Kind {
+    if let Some(r) = override_ {
         return resolvers::Kind::parse(r);
     }
     if let Some(r) = cfg.restack.resolver.as_deref() {
         return resolvers::Kind::parse(r);
     }
     resolvers::Kind::autodetect()
+}
+
+/// Entry point for `cw resolve <files>`. Loads config, picks the configured
+/// (or overridden) resolver, and runs it against `args.files` in the current
+/// working directory. Intended for restack hooks that need the user's
+/// resolver without hardcoding a specific CLI.
+pub fn resolve_cmd(args: ResolveArgs) -> Result<()> {
+    if args.files.is_empty() {
+        return Ok(());
+    }
+    let cwd = std::env::current_dir()?;
+    let cfg = config::discover::load(&cwd)?;
+    let kind = resolver_from(args.resolver.as_deref(), &cfg);
+    let files: Vec<PathBuf> = args.files.into_iter().map(PathBuf::from).collect();
+    resolvers::run(kind, &cwd, &files)
 }
 
 #[cfg(test)]
