@@ -51,20 +51,49 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
         prompt: if tail.is_empty() { None } else { Some(tail) },
     };
 
+    if let Some(n) = numeric_head {
+        let cap = cfg.workspace.max_count.unwrap_or(99);
+        match (&resolved, &create_from_pr) {
+            (Some(r), _) if r.pr.is_some() => {
+                let pr = r.pr.unwrap();
+                let branch = r.branch.as_deref().unwrap_or("");
+                emitter.emit(Record::Msg(&format!("Found PR #{pr} → {branch}")));
+                emitter.emit(Record::Msg(&format!(
+                    "Branch already checked out in {}",
+                    r.dir.display()
+                )));
+            }
+            (Some(r), _) if n <= cap => {
+                emitter.emit(Record::Msg(&format!(
+                    "Switching to workspace {n} ({})",
+                    r.dir.display()
+                )));
+            }
+            (None, Some(pr_t)) => {
+                emitter.emit(Record::Msg(&format!(
+                    "Found PR #{} → {}",
+                    pr_t.number, pr_t.branch
+                )));
+            }
+            _ => {}
+        }
+    }
+
     match resolved {
         Some(r) => enter_workspace(&cfg, r, flags, emitter, false),
         None => {
-            // No existing target — create a fresh workspace with `head` as
-            // description / branch name. If there was tail text, it becomes
-            // the Claude prompt.
+            // No existing target — create a fresh workspace. For PR-create,
+            // branch comes from the PR and prompt stays as tail only. For
+            // description-create, the whole positional (head + tail) is both
+            // the slug source and the Claude prompt — matching Bash `$*`.
+            let is_description_create = create_from_pr.is_none();
+            let full_input = positional.join(" ");
             let subject = if let Some(pr_target) = &create_from_pr {
                 pr_target.branch.clone()
-            } else if flags.prompt.is_some() {
-                // head + tail was a full description; recombine.
-                positional.join(" ")
             } else {
-                head
+                full_input.clone()
             };
+            let _ = head;
             let r = create::create(
                 &cfg,
                 &cwd,
@@ -86,6 +115,11 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 branch: Some(r.branch),
                 pr: None,
             };
+            let launch_prompt = if is_description_create {
+                Some(full_input)
+            } else {
+                flags.prompt.clone()
+            };
             enter_workspace(
                 &cfg,
                 resolved,
@@ -93,6 +127,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                     pr_override: flags
                         .pr_override
                         .or(create_from_pr.as_ref().map(|target| target.number)),
+                    prompt: launch_prompt,
                     ..flags
                 },
                 emitter,
@@ -215,9 +250,9 @@ fn compose_editor_launch(
 
     let has_prompt = flags.prompt.is_some();
 
-    // Match the Bash dispatcher: only auto-launch Claude on first entry
-    // (freshly-created workspace) or when the user supplied a prompt /
-    // --pr / --continue. Bare `cw 3` just CDs.
+    // Auto-launch Claude only on first entry, or when the user supplied a
+    // prompt / explicit PR override / --continue. Bare `cw 8564` should just
+    // enter the already-open workspace without trying to resume Claude.
     if !first_entry && !has_prompt && flags.pr_override.is_none() {
         return None;
     }
