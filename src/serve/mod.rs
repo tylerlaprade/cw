@@ -101,12 +101,33 @@ fn start(
         for svc in services {
             if let Some(url) = &svc.open_url {
                 let ctx = processes::Ctx::build(cfg, resolved, svc)?;
+                // Don't race the dev server on cold start. Condor's serve.sh
+                // delegates browser-opening to vite's `--open`, which waits
+                // for readiness; mirror that by polling TCP connect first.
+                wait_port_listening(ctx.port, std::time::Duration::from_secs(60));
                 let url = ctx.expand(url);
                 let _ = std::process::Command::new("open").arg(&url).status();
             }
         }
     }
     Ok(())
+}
+
+fn wait_port_listening(port: u16, timeout: std::time::Duration) -> bool {
+    use std::net::TcpStream;
+    use std::time::Instant;
+    let addr = match format!("127.0.0.1:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
 }
 
 fn stop(
