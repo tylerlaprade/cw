@@ -3,23 +3,23 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Load the effective config for `cwd`. Walks up to the git repo root,
-/// reads `.devcli.toml` if present, then runs the autodetect pass.
+/// Load the effective config for `cwd`. Resolves the current worktree,
+/// reads `.devcli.toml` from the worktree root — falling back to the main
+/// worktree's copy so sibling worktrees inherit unless they override — then
+/// runs the autodetect pass.
 pub fn load(cwd: &Path) -> Result<Config> {
     let repo_root = repo_root(cwd);
     let (path, mut cfg) = match &repo_root {
-        Some(root) => {
-            let p = root.join(".devcli.toml");
-            if p.is_file() {
+        Some(root) => match find_config(root) {
+            Some(p) => {
                 let text = std::fs::read_to_string(&p)
                     .with_context(|| format!("reading {}", p.display()))?;
                 let cfg: Config = toml::from_str(&text)
                     .with_context(|| format!("parsing {}", p.display()))?;
                 (Some(p), cfg)
-            } else {
-                (None, Config::default())
             }
-        }
+            None => (None, Config::default()),
+        },
         None => (None, Config::default()),
     };
     cfg.runtime = Runtime {
@@ -172,6 +172,21 @@ fn has_frontend_package(dir: &Path) -> bool {
     }
     let tail = &text[scripts_idx..];
     tail.contains("\"dev\"") || tail.contains("\"start\"")
+}
+
+/// Look for `.devcli.toml` at `worktree_root`, then at the main worktree.
+/// Worktree-local file wins, so a worktree can override the shared config.
+fn find_config(worktree_root: &Path) -> Option<PathBuf> {
+    let local = worktree_root.join(".devcli.toml");
+    if local.is_file() {
+        return Some(local);
+    }
+    let main = main_worktree(worktree_root)?;
+    if main == worktree_root {
+        return None;
+    }
+    let shared = main.join(".devcli.toml");
+    shared.is_file().then_some(shared)
 }
 
 fn repo_root(cwd: &Path) -> Option<PathBuf> {
