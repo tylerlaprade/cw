@@ -4,18 +4,19 @@ pub mod resolvers;
 
 use crate::cli::RestackArgs;
 use crate::config::{self, Config};
-use crate::shell::Emitter;
+use crate::shell::{Emitter, Record};
 use crate::workspace::resolve;
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
-pub fn run(args: RestackArgs, _emitter: &mut Emitter) -> Result<()> {
+pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cfg = config::discover::load(&cwd)?;
     let r = resolve::resolve(&cfg, &cwd, args.target.as_deref())?;
     let dir = r.dir.clone();
+    emit_shell_state(emitter, &cwd, &r);
 
     let stashed = autostash(&dir)?;
     let out = run_loop(&cfg, &dir, &args);
@@ -29,17 +30,27 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
     if !rebase_in_progress(dir) {
         // Kick off the rebase.
         if graphite_enabled(cfg) {
-            let st = Command::new("gt")
+            let out = Command::new("gt")
                 .args(["get", "--no-interactive"])
                 .current_dir(dir)
-                .status();
-            if let Err(e) = st {
-                eprintln!("warn: gt get failed: {e:#}");
+                .output();
+            match out {
+                Ok(out) if !out.status.success() => {
+                    eprintln!("warn: {}", command_failure("gt get failed", &out));
+                }
+                Err(e) => eprintln!("warn: gt get failed: {e:#}"),
+                Ok(_) => {}
             }
-            println!("{} gt restack", "→".cyan());
-            let st = Command::new("gt").arg("r").current_dir(dir).status()?;
-            if st.success() && !rebase_in_progress(dir) {
+
+            let out = Command::new("gt")
+                .args(["r", "--quiet"])
+                .current_dir(dir)
+                .output()?;
+            if out.status.success() && !rebase_in_progress(dir) {
                 return finalize(cfg, dir);
+            }
+            if !out.status.success() && !rebase_in_progress(dir) {
+                anyhow::bail!("{}", command_failure("gt restack failed", &out));
             }
         } else {
             println!("{} git rebase {}", "→".cyan(), cfg.runtime.base_branch);
@@ -85,11 +96,13 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
             }
         }
 
+        stage_resolved_files(dir, &unresolved)?;
         let still = unresolved_files(dir)?;
         if !still.is_empty() {
             // 2. Fall through to the resolver.
             let resolver = pick_resolver(cfg, args);
             resolvers::run(resolver, dir, &still)?;
+            stage_resolved_files(dir, &still)?;
         }
 
         let remaining = unresolved_files(dir)?;
@@ -125,6 +138,34 @@ fn finalize(cfg: &Config, dir: &Path) -> Result<()> {
 }
 
 // --- helpers --------------------------------------------------------------
+
+fn emit_shell_state(emitter: &mut Emitter, cwd: &Path, r: &resolve::Resolved) {
+    if r.dir == cwd {
+        return;
+    }
+
+    let cd = r.dir.to_string_lossy().to_string();
+    emitter.emit(Record::Cd(&cd));
+    if let Some(n) = r.number {
+        let title = format!("#{n}");
+        emitter.emit(Record::Title(&title));
+    }
+}
+
+fn command_failure(prefix: &str, out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() && !stdout.is_empty() {
+        format!("{stderr}\n{stdout}")
+    } else if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit {}", out.status.code().unwrap_or(-1))
+    };
+    format!("{prefix}: {detail}")
+}
 
 pub fn rebase_in_progress(dir: &Path) -> bool {
     // git uses .git/rebase-merge or .git/rebase-apply. In a worktree, GIT_DIR
@@ -164,6 +205,41 @@ pub fn unresolved_files(dir: &Path) -> Result<Vec<PathBuf>> {
         .filter(|l| !l.is_empty())
         .map(PathBuf::from)
         .collect())
+}
+
+fn stage_resolved_files(dir: &Path, candidates: &[PathBuf]) -> Result<()> {
+    let mut resolved = Vec::new();
+    for rel in candidates {
+        if !conflict_markers_present(&dir.join(rel))? {
+            resolved.push(rel.clone());
+        }
+    }
+    if resolved.is_empty() {
+        return Ok(());
+    }
+
+    let st = Command::new("git")
+        .arg("add")
+        .arg("--")
+        .args(resolved.iter().map(|p| p.as_os_str()))
+        .current_dir(dir)
+        .status()
+        .context("git add resolved files")?;
+    if !st.success() {
+        anyhow::bail!("git add failed while staging resolved files");
+    }
+    Ok(())
+}
+
+fn conflict_markers_present(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text.lines().any(|line| {
+        line.starts_with("<<<<<<<") || line.starts_with("=======") || line.starts_with(">>>>>>>")
+    }))
 }
 
 fn autostash(dir: &Path) -> Result<bool> {
@@ -244,7 +320,9 @@ fn run_hook(hook: &Path, dir: &Path, files: &[PathBuf]) -> Result<()> {
         cmd.arg(f.as_os_str());
     }
     cmd.current_dir(dir);
-    let st = cmd.status().with_context(|| format!("running {}", hook.display()))?;
+    let st = cmd
+        .status()
+        .with_context(|| format!("running {}", hook.display()))?;
     if !st.success() {
         eprintln!(
             "{} hook exited {}; continuing to resolver",
@@ -253,7 +331,10 @@ fn run_hook(hook: &Path, dir: &Path, files: &[PathBuf]) -> Result<()> {
         );
     }
     // Stage whatever the hook touched.
-    let _ = Command::new("git").args(["add", "-u"]).current_dir(dir).status();
+    let _ = Command::new("git")
+        .args(["add", "-u"])
+        .current_dir(dir)
+        .status();
     Ok(())
 }
 
@@ -265,6 +346,35 @@ fn pick_resolver(cfg: &Config, args: &RestackArgs) -> resolvers::Kind {
         return resolvers::Kind::parse(r);
     }
     resolvers::Kind::autodetect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conflict_markers_present;
+    use std::fs;
+
+    #[test]
+    fn detects_conflict_markers_at_line_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conflict.txt");
+        fs::write(
+            &path,
+            "<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> incoming\n",
+        )
+        .unwrap();
+        assert!(conflict_markers_present(&path).unwrap());
+    }
+
+    #[test]
+    fn ignores_missing_files_and_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone.txt");
+        assert!(!conflict_markers_present(&missing).unwrap());
+
+        let plain = dir.path().join("plain.txt");
+        fs::write(&plain, "no conflicts here\n").unwrap();
+        assert!(!conflict_markers_present(&plain).unwrap());
+    }
 }
 
 fn graphite_enabled(cfg: &Config) -> bool {
