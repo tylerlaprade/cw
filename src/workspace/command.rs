@@ -29,6 +29,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
 
     let head = positional[0].clone();
     let tail = positional[1..].join(" ");
+    let numeric_head = head.parse::<u32>().ok();
 
     // Try to resolve the head as an existing target first (non-fatal on fail).
     let resolved = resolve::resolve(&cfg, &cwd, Some(&head)).ok();
@@ -37,6 +38,11 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
     } else {
         None
     };
+    if numeric_head.is_some() && resolved.is_none() && create_from_pr.is_none() {
+        anyhow::bail!(
+            "numeric target {head:?} did not match an existing workspace or PR; use spaces for new work"
+        );
+    }
 
     let flags = LaunchFlags {
         stack,
@@ -102,6 +108,9 @@ pub fn open(target: Option<String>, emitter: &mut Emitter) -> Result<()> {
     let r = resolve::resolve(&cfg, &cwd, target.as_deref())?;
     // CD into the workspace first.
     emitter.emit(Record::Cd(&r.dir.to_string_lossy()));
+    if let Some(n) = r.number {
+        emitter.emit(Record::Title(&format!("#{}", n)));
+    }
     // Then request the shell to invoke `cw serve start --open` in foreground.
     let argv = vec![
         "cw".into(),
