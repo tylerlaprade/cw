@@ -36,6 +36,10 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
             e.dir != root
                 && e.number.is_some()
                 && (e.is_removable() || e.is_inactive(STALE_HOURS))
+                // A freshly-created workspace has no unique commits vs base
+                // and looks identical to an abandoned branch. Spare anything
+                // whose directory was created within STALE_HOURS.
+                && !e.is_fresh(STALE_HOURS)
         })
         .cloned()
         .collect();

@@ -21,6 +21,11 @@ pub struct Entry {
     /// Age of the last commit in hours. `None` when git fails (e.g., stale
     /// worktree metadata for a dir that was rm'd).
     pub inactive_hours: Option<u64>,
+    /// Age of the worktree *directory* (mtime) in hours. A fresh `cw <desc>`
+    /// workspace has no unique commits vs base — indistinguishable from an
+    /// abandoned branch by commit metadata alone. The directory mtime is the
+    /// only reliable signal that the workspace is new.
+    pub dir_age_hours: Option<u64>,
 }
 
 impl Entry {
@@ -35,6 +40,12 @@ impl Entry {
     /// Treat as a cleanup candidate when idle longer than `stale_hours`.
     pub fn is_inactive(&self, stale_hours: u64) -> bool {
         self.inactive_hours.is_some_and(|h| h >= stale_hours)
+    }
+
+    /// Worktree directory created within `threshold_hours`. Used to spare
+    /// freshly-created workspaces from sweeps.
+    pub fn is_fresh(&self, threshold_hours: u64) -> bool {
+        self.dir_age_hours.is_some_and(|h| h < threshold_hours)
     }
 }
 
@@ -57,8 +68,10 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
             no_unique_commits: false,
             pr_closed_or_merged: None,
             inactive_hours: None,
+            dir_age_hours: None,
         };
         e.inactive_hours = last_commit_age_hours(&w.dir);
+        e.dir_age_hours = dir_age_hours(&w.dir);
         if let Some(b) = &branch {
             e.merged = is_merged(root, b, &cfg.runtime.base_branch);
             e.remote_gone = remote_gone(root, b);
@@ -88,6 +101,12 @@ fn last_commit_age_hours(dir: &Path) -> Option<u64> {
     let ts: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     Some(now.saturating_sub(ts) / 3600)
+}
+
+fn dir_age_hours(dir: &Path) -> Option<u64> {
+    let mtime = std::fs::metadata(dir).ok()?.modified().ok()?;
+    let age = SystemTime::now().duration_since(mtime).ok()?;
+    Some(age.as_secs() / 3600)
 }
 
 fn is_merged(inside: &Path, branch: &str, base: &str) -> bool {
