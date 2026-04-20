@@ -158,6 +158,7 @@ pub fn remove(args: RemoveArgs, emitter: &mut Emitter) -> Result<()> {
         force: args.force,
         dry_run: args.dry_run,
         no_close_tab: args.no_close_tab,
+        stale_hours: None,
     };
     crate::workspace::teardown::run(&cfg, &args.targets, &opts, emitter)
 }

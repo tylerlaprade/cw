@@ -6,6 +6,7 @@ use crate::util::paths;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -17,6 +18,9 @@ pub struct Entry {
     pub detached: bool,
     pub no_unique_commits: bool,
     pub pr_closed_or_merged: Option<u32>,
+    /// Age of the last commit in hours. `None` when git fails (e.g., stale
+    /// worktree metadata for a dir that was rm'd).
+    pub inactive_hours: Option<u64>,
 }
 
 impl Entry {
@@ -26,6 +30,11 @@ impl Entry {
             || self.remote_gone
             || self.no_unique_commits
             || self.pr_closed_or_merged.is_some()
+    }
+
+    /// Treat as a cleanup candidate when idle longer than `stale_hours`.
+    pub fn is_inactive(&self, stale_hours: u64) -> bool {
+        self.inactive_hours.is_some_and(|h| h >= stale_hours)
     }
 }
 
@@ -47,7 +56,9 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
             detached: branch.is_none(),
             no_unique_commits: false,
             pr_closed_or_merged: None,
+            inactive_hours: None,
         };
+        e.inactive_hours = last_commit_age_hours(&w.dir);
         if let Some(b) = &branch {
             e.merged = is_merged(root, b, &cfg.runtime.base_branch);
             e.remote_gone = remote_gone(root, b);
@@ -65,12 +76,26 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+fn last_commit_age_hours(dir: &Path) -> Option<u64> {
+    let out = Command::new("git")
+        .args(["log", "-1", "--format=%ct"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ts: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    Some(now.saturating_sub(ts) / 3600)
+}
+
 fn is_merged(inside: &Path, branch: &str, base: &str) -> bool {
     Command::new("git")
         .args(["merge-base", "--is-ancestor", branch, base])
         .current_dir(inside)
-        .status()
-        .map(|s| s.success())
+        .output()
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
