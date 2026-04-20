@@ -525,7 +525,11 @@ fn kick_off_setup(dir: &Path, cfg: &Config, log: &Path) -> Result<()> {
     }
 
     let chain = parts.join(" && ");
-    detach::spawn_shell_detached(&chain, dir, log, "SETUP_DONE")?;
+    // Strip UV_WORKING_DIR inherited from the caller's direnv context: if the
+    // caller ran `cw` from inside another workspace's hanaq subdir, `uv run
+    // --script` in hook commands would chdir there and resolve `./scripts/…`
+    // against the wrong tree. Mirrors `new-workspace.sh` line 319.
+    detach::spawn_shell_detached(&chain, dir, log, "SETUP_DONE", &["UV_WORKING_DIR"])?;
     Ok(())
 }
 
