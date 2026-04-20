@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-suite="${1:-cw}"
+impl="${1:-rust}"
+suite="${2:-cw}"
 
 : "${CW_PARITY_LEGACY_ROOT:?set CW_PARITY_LEGACY_ROOT to the Condor repo root}"
 
@@ -22,8 +23,20 @@ case "$suite" in
     cw)
         cp "$CW_PARITY_LEGACY_ROOT/scripts/test-cw.sh" "$tmp/scripts/test-cw.sh"
         cp "$CW_PARITY_LEGACY_ROOT/scripts/test-lib.sh" "$tmp/scripts/test-lib.sh"
-        cp "$REPO_ROOT/scripts/compat/condor/cw.sh" "$tmp/scripts/cw.sh"
-        cp "$REPO_ROOT/scripts/compat/condor/worktree-lib.sh" "$tmp/scripts/worktree-lib.sh"
+        case "$impl" in
+            rust)
+                cp "$REPO_ROOT/scripts/compat/condor/cw.sh" "$tmp/scripts/cw.sh"
+                cp "$REPO_ROOT/scripts/compat/condor/worktree-lib.sh" "$tmp/scripts/worktree-lib.sh"
+                ;;
+            legacy)
+                cp "$CW_PARITY_LEGACY_ROOT/scripts/cw.sh" "$tmp/scripts/cw.sh"
+                cp "$CW_PARITY_LEGACY_ROOT/scripts/worktree-lib.sh" "$tmp/scripts/worktree-lib.sh"
+                ;;
+            *)
+                echo "unknown implementation: $impl" >&2
+                exit 2
+                ;;
+        esac
         exec bash "$tmp/scripts/test-cw.sh"
         ;;
     *)

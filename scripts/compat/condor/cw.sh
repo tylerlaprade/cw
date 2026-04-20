@@ -68,8 +68,11 @@ _cw_install_gh_shim() {
 #!/usr/bin/env bash
 set +e
 
-stdout="$("$CW_COMPAT_REAL_GH" "$@" 2> >(cat >&2))"
+stderr_file="$(mktemp)"
+stdout="$("$CW_COMPAT_REAL_GH" "$@" 2>"$stderr_file")"
 rc=$?
+cat "$stderr_file" >&2
+rm -f "$stderr_file"
 if [[ $rc -ne 0 ]]; then
     exit "$rc"
 fi

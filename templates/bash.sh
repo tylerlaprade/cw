@@ -14,7 +14,7 @@ cw() {
     while IFS= read -r _line; do
         local -a _parts
         IFS=$'\t' read -r -a _parts <<< "$_line"
-        [[ "${_parts[0]}" != "CW" ]] && continue
+        [[ "${_parts[0]}" != "CW" ]] && { printf '%s\n' "$_line"; continue; }
         local _kind="${_parts[1]}"
         local -a _argv=()
         local _i
@@ -25,7 +25,7 @@ cw() {
             CD)        (( ${#_argv[@]} )) && builtin cd -- "${_argv[0]}" ;;
             TITLE)     printf '\033]0;%s\007' "${_argv[0]}" ;;
             MSG)       printf '%s\n' "${_argv[0]}" >&2 ;;
-            EXEC)      "${_argv[@]}" ;;
+            EXEC)      "${_argv[@]}" </dev/tty ;;
             EXEC_BG)   { "${_argv[@]}" & } 2>/dev/null ; disown 2>/dev/null ;;
             CLOSE_TAB) _close=1 ;;
         esac

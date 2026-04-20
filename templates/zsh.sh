@@ -19,10 +19,10 @@ cw() {
         local -a _parts
         # Split on literal TAB; p-flag so \t in the separator string is parsed.
         _parts=("${(@ps:\t:)_line}")
-        [[ "${_parts[1]}" != "CW" ]] && continue
+        [[ "${_parts[1]}" != "CW" ]] && { print -r -- "$_line"; continue; }
         local _kind="${_parts[2]}"
         local -a _argv=()
-        local _i
+        local _i=0
         for (( _i=3; _i <= ${#_parts[@]}; _i++ )); do
             _argv+=("$(printf '%b' "${_parts[$_i]}")")
         done
@@ -30,7 +30,7 @@ cw() {
             CD)        (( ${#_argv[@]} )) && builtin cd -- "${_argv[1]}" ;;
             TITLE)     printf '\033]0;%s\007' "${_argv[1]}" ;;
             MSG)       print -u2 -- "${_argv[1]}" ;;
-            EXEC)      "${_argv[@]}" ;;
+            EXEC)      "${_argv[@]}" </dev/tty ;;
             EXEC_BG)   { "${_argv[@]}" & } 2>/dev/null ; disown 2>/dev/null ;;
             CLOSE_TAB) _close=1 ;;
         esac
