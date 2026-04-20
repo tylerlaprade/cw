@@ -1,8 +1,8 @@
 use crate::cli::{RemoveArgs, WorkspaceAction, WorkspaceArgs};
 use crate::config;
 use crate::shell::Emitter;
-use crate::workspace::resolve;
-use anyhow::Result;
+use crate::workspace::{create, resolve};
+use anyhow::{Context, Result};
 
 pub fn default_dispatch(_rest: Vec<String>, _emitter: &mut Emitter) -> Result<()> {
     Err(anyhow::anyhow!(
@@ -22,7 +22,23 @@ pub fn dispatch(args: WorkspaceArgs, _emitter: &mut Emitter) -> Result<()> {
     match args.action {
         WorkspaceAction::List => Err(anyhow::anyhow!("`cw workspace list` lands in step 11")),
         WorkspaceAction::Resolve { target, json } => do_resolve(&target, json),
+        WorkspaceAction::NextNumber => do_next_number(),
     }
+}
+
+fn do_next_number() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cfg = config::discover::load(&cwd)?;
+    let root = cfg
+        .runtime
+        .repo_root
+        .as_deref()
+        .context("not inside a git repo")?;
+    let parent = root.parent().context("repo root has no parent")?;
+    let (n, lock) = create::claim_number(&cfg, parent, std::path::Path::new("/tmp"))?;
+    lock.release();
+    println!("{}", n);
+    Ok(())
 }
 
 fn do_resolve(target: &str, json: bool) -> Result<()> {

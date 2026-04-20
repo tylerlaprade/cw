@@ -137,6 +137,8 @@ pub enum WorkspaceAction {
         #[arg(long)]
         json: bool,
     },
+    /// Print the lowest-available workspace number (dry-run claim).
+    NextNumber,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

@@ -9,8 +9,43 @@ use crate::exec::detach;
 use crate::util::slugify::slugify;
 use anyhow::{Context, Result};
 use regex::Regex;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
+
+/// Lock dirs older than this are treated as crashed/abandoned and reclaimed.
+const STALE_LOCK_AGE: Duration = Duration::from_secs(60);
+
+/// RAII guard for the `/tmp/.devcli_{stem}_{n}_claim` lock dir. Removes the
+/// lock when dropped so the slot doesn't leak past the end of `create()`.
+/// Without this, Rust cw used to leak lock dirs forever — every run masked
+/// the slot it claimed, so subsequent runs skipped past it and new workspaces
+/// piled up at the top of the range instead of filling the gaps.
+#[derive(Debug)]
+pub struct LockGuard {
+    path: PathBuf,
+    released: bool,
+}
+
+impl LockGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, released: false }
+    }
+
+    pub fn release(mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+        self.released = true;
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateOpts {
@@ -70,7 +105,7 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         cfg.runtime.base_branch.clone()
     };
 
-    let number = claim_number(cfg, parent_dir)?;
+    let (number, _lock) = claim_number(cfg, parent_dir, Path::new("/tmp"))?;
     let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
     let existed = branch_exists(root, &branch)?;
 
@@ -102,25 +137,131 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     })
 }
 
-fn claim_number(cfg: &Config, parent: &Path) -> Result<u32> {
+/// Reserve the lowest-available workspace number and hold a `LockGuard` for
+/// it until the caller drops the guard. Mirrors Bash `find_next_number` +
+/// `claim_workspace_number` in `new-workspace.sh`: consider sibling dirs,
+/// `{tmp_dir}/{stem}_N`, `git worktree list`, and live per-slot locks as
+/// "in use"; reclaim lock dirs older than `STALE_LOCK_AGE`.
+pub fn claim_number(cfg: &Config, parent: &Path, tmp_dir: &Path) -> Result<(u32, LockGuard)> {
     let max = cfg.workspace.max_count.unwrap_or(99);
-    let stem = &cfg.runtime.stem;
-    for n in 1..=max {
-        let candidate = parent.join(format!("{}_{}", stem, n));
-        if candidate.exists() {
-            continue;
-        }
-        let lock = PathBuf::from(format!("/tmp/.devcli_{}_{}_claim", stem, n));
-        // Use mkdir-based lock for atomicity across processes.
-        if std::fs::create_dir(&lock).is_ok() {
-            // Double-check after claiming.
-            if !candidate.exists() {
-                return Ok(n);
+    let stem = cfg.runtime.stem.clone();
+    let repo_root = cfg.runtime.repo_root.clone();
+
+    // Bound the race retry loop so we can't spin forever if every slot is
+    // genuinely taken (another process keeps winning races).
+    for _ in 0..max.saturating_add(1) {
+        let used = scan_used_numbers(&stem, parent, tmp_dir, repo_root.as_deref());
+        let Some(n) = (1..=max).find(|n| !used.contains(n)) else {
+            anyhow::bail!("no free workspace number ≤ {}", max);
+        };
+        let lock = tmp_dir.join(format!(".devcli_{}_{}_claim", stem, n));
+        match std::fs::create_dir(&lock) {
+            Ok(_) => return Ok((n, LockGuard::new(lock))),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Lost the race, or the lock is stale and wasn't pruned on
+                // this pass. The next scan calls reclaim-if-stale and either
+                // removes it or records it as live.
+                continue;
             }
-            let _ = std::fs::remove_dir(&lock);
+            Err(e) => {
+                return Err(e).with_context(|| format!("creating lock dir {}", lock.display()));
+            }
         }
     }
-    anyhow::bail!("no free workspace number ≤ {}", max);
+    anyhow::bail!("no free workspace number ≤ {} (races exhausted)", max);
+}
+
+fn scan_used_numbers(
+    stem: &str,
+    parent: &Path,
+    tmp_dir: &Path,
+    repo_root: Option<&Path>,
+) -> BTreeSet<u32> {
+    let mut used = BTreeSet::new();
+    collect_stem_numbers(parent, stem, &mut used);
+    collect_stem_numbers(tmp_dir, stem, &mut used);
+    collect_live_lock_numbers(tmp_dir, stem, &mut used);
+    if let Some(root) = repo_root {
+        collect_worktree_numbers(root, stem, &mut used);
+    }
+    used
+}
+
+fn collect_stem_numbers(dir: &Path, stem: &str, out: &mut BTreeSet<u32>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if let Some(n) = parse_stem_number(name, stem) {
+            out.insert(n);
+        }
+    }
+}
+
+fn collect_worktree_numbers(inside: &Path, stem: &str, out: &mut BTreeSet<u32>) {
+    let Ok(worktrees) = crate::git::worktree::list(inside) else {
+        return;
+    };
+    for w in worktrees {
+        if let Some(name) = w.dir.file_name().and_then(|n| n.to_str()) {
+            if let Some(n) = parse_stem_number(name, stem) {
+                out.insert(n);
+            }
+        }
+    }
+}
+
+fn collect_live_lock_numbers(tmp_dir: &Path, stem: &str, out: &mut BTreeSet<u32>) {
+    let prefix = format!(".devcli_{}_", stem);
+    let suffix = "_claim";
+    let Ok(entries) = std::fs::read_dir(tmp_dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(num_str) = name.strip_prefix(&prefix).and_then(|s| s.strip_suffix(suffix)) else {
+            continue;
+        };
+        let Ok(n) = num_str.parse::<u32>() else {
+            continue;
+        };
+        if lock_is_stale(&path) {
+            let _ = std::fs::remove_dir(&path);
+        } else {
+            out.insert(n);
+        }
+    }
+}
+
+fn parse_stem_number(name: &str, stem: &str) -> Option<u32> {
+    let rest = name.strip_prefix(stem)?.strip_prefix('_')?;
+    rest.parse::<u32>().ok()
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    SystemTime::now()
+        .duration_since(mtime)
+        .map(|age| age > STALE_LOCK_AGE)
+        .unwrap_or(false)
 }
 
 fn branch_exists(inside: &Path, branch: &str) -> Result<bool> {
@@ -538,5 +679,161 @@ mod tests {
             perms.set_mode(0o755);
             fs::set_permissions(path, perms).unwrap();
         }
+    }
+
+    fn test_cfg(root: &Path, stem: &str, max: u32) -> Config {
+        Config {
+            workspace: WorkspaceCfg {
+                max_count: Some(max),
+                base_branch: None,
+                stem: None,
+            },
+            integrations: crate::config::schema::Integrations {
+                graphite: Some(false),
+                github: None,
+                claude: None,
+                codex: None,
+                direnv: None,
+                acli: None,
+            },
+            services: Vec::new(),
+            deps: None,
+            databases: None,
+            restack: Default::default(),
+            hooks: Default::default(),
+            env: Default::default(),
+            runtime: Runtime {
+                repo_root: Some(root.to_path_buf()),
+                config_path: None,
+                stem: stem.into(),
+                base_branch: "develop".into(),
+            },
+        }
+    }
+
+    fn set_mtime(path: &Path, age: Duration) {
+        use std::fs::FileTimes;
+        let target = SystemTime::now()
+            .checked_sub(age)
+            .expect("age within SystemTime range");
+        let times = FileTimes::new().set_accessed(target).set_modified(target);
+        let f = std::fs::File::open(path)
+            .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        f.set_times(times)
+            .unwrap_or_else(|e| panic!("set_times {}: {e}", path.display()));
+    }
+
+    fn sandbox(stem: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let tmp = temp.path().join("tmp");
+        let root = parent.join(format!("{stem}_main"));
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        init_git_repo(&root);
+        (temp, parent, tmp, root)
+    }
+
+    #[test]
+    fn claim_number_fills_lowest_gap() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        std::fs::create_dir_all(parent.join("cwtest_1")).unwrap();
+        std::fs::create_dir_all(parent.join("cwtest_3")).unwrap();
+        let cfg = test_cfg(&root, "cwtest", 48);
+        let (n, lock) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n, 2);
+        assert!(tmp.join(".devcli_cwtest_2_claim").is_dir());
+        drop(lock);
+        assert!(!tmp.join(".devcli_cwtest_2_claim").is_dir());
+    }
+
+    #[test]
+    fn claim_number_skips_active_lock() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        std::fs::create_dir_all(parent.join("cwtest_1")).unwrap();
+        std::fs::create_dir(tmp.join(".devcli_cwtest_2_claim")).unwrap();
+        let cfg = test_cfg(&root, "cwtest", 48);
+        let (n, _lock) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn claim_number_reclaims_stale_lock() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        std::fs::create_dir_all(parent.join("cwtest_1")).unwrap();
+        let stale = tmp.join(".devcli_cwtest_2_claim");
+        std::fs::create_dir(&stale).unwrap();
+        set_mtime(&stale, Duration::from_secs(120));
+        let cfg = test_cfg(&root, "cwtest", 48);
+        let (n, _lock) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn claim_number_honors_git_worktree_list() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        let elsewhere = parent.join("cwtest_2");
+        let status = Command::new("git")
+            .args(["worktree", "add", "-b", "claimed", elsewhere.to_str().unwrap(), "develop"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cfg = test_cfg(&root, "cwtest", 48);
+        let (n, _lock) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n, 1);
+
+        std::fs::create_dir_all(parent.join("cwtest_1")).unwrap();
+        let (n2, _lock2) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n2, 3);
+    }
+
+    #[test]
+    fn claim_number_bails_when_all_slots_taken() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        for i in 1..=3 {
+            std::fs::create_dir_all(parent.join(format!("cwtest_{i}"))).unwrap();
+        }
+        let cfg = test_cfg(&root, "cwtest", 3);
+        let err = claim_number(&cfg, &parent, &tmp).unwrap_err();
+        assert!(err.to_string().contains("no free workspace number"), "{err}");
+    }
+
+    /// Regression: the pre-fix `claim_number` created a `mkdir` lock under
+    /// `/tmp` and never removed it, so each completed create() permanently
+    /// masked the slot it claimed. After a few runs every low number was
+    /// "locked" even though the corresponding dirs were long gone, and new
+    /// workspaces piled up at the top of the range. A freed slot must be
+    /// reusable on the next claim.
+    #[test]
+    fn claim_number_does_not_leak_locks_between_claims() {
+        let (_temp, parent, tmp, root) = sandbox("cwtest");
+        let cfg = test_cfg(&root, "cwtest", 48);
+
+        let (n1, guard1) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n1, 1);
+        std::fs::create_dir_all(parent.join(format!("cwtest_{n1}"))).unwrap();
+        drop(guard1);
+        assert!(!tmp.join(".devcli_cwtest_1_claim").exists());
+
+        // Simulate `cw remove 1` by removing the dir; a second claim should
+        // now pick 1 again — the slot is free, nothing stale should be
+        // masking it.
+        std::fs::remove_dir_all(parent.join("cwtest_1")).unwrap();
+        let (n2, _guard2) = claim_number(&cfg, &parent, &tmp).unwrap();
+        assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn lock_guard_releases_on_drop() {
+        let (_temp, _parent, tmp, _root) = sandbox("cwtest");
+        let path = tmp.join(".devcli_cwtest_9_claim");
+        std::fs::create_dir(&path).unwrap();
+        {
+            let _g = LockGuard::new(path.clone());
+            assert!(path.is_dir());
+        }
+        assert!(!path.exists());
     }
 }
