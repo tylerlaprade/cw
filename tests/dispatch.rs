@@ -21,3 +21,8 @@ fn numeric_token_without_workspace_or_pr_errors_instead_of_creating_branch() {
         Runner::Rust,
     );
 }
+
+#[test]
+fn pr_with_prompt_does_not_pass_continue() {
+    dispatch_cases::pr_with_prompt_does_not_pass_continue(Runner::Rust);
+}
