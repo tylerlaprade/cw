@@ -109,6 +109,8 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
     let existed = branch_exists(root, &branch)?;
 
+    println!("Creating workspace {number}...");
+    println!("Creating worktree at {}...", dir.display());
     add_worktree(root, &dir, &branch, &parent_branch, existed)?;
     if !existed && graphite_enabled(cfg) {
         gt_track(&dir, &parent_branch)?;
@@ -127,6 +129,12 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         format!("# cw setup log for {} #{}\n", branch, number),
     );
     kick_off_setup(&dir, cfg, &setup_log)?;
+    println!(
+        "Dependencies + database clone running in background (log: {})",
+        setup_log.display()
+    );
+
+    print_ready_banner(cfg, number, &dir, &setup_log);
 
     Ok(CreateResult {
         number,
@@ -135,6 +143,39 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         existed,
         setup_log,
     })
+}
+
+fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
+    println!();
+    println!("========================================");
+    println!("Workspace {number} ready!");
+    println!("========================================");
+    println!("  Directory: {}", dir.display());
+    for svc in &cfg.services {
+        let Some(port_cfg) = &svc.port else {
+            continue;
+        };
+        let port = u32::from(port_cfg.base) + number;
+        let label = match svc.name.as_str() {
+            "frontend" => "Frontend: ",
+            "backend" => "Backend:  ",
+            _ => continue,
+        };
+        println!("  {label} http://localhost:{port}");
+    }
+    if let Some(db) = &cfg.databases {
+        let prefix = db
+            .pattern
+            .replace("{n}", &number.to_string())
+            .replace("{suffix}", &db.default_source_suffix);
+        println!("  Database:  {prefix}");
+    }
+    println!();
+    println!("Start with: cd {} && ./serve.sh start", dir.display());
+    println!();
+    eprintln!("⚠ Background setup still running (deps, DB clone, migrations).");
+    eprintln!("  Tail progress: tail -f {}", setup_log.display());
+    eprintln!("  Wait for SETUP_DONE before running the server.");
 }
 
 /// Reserve the lowest-available workspace number and hold a `LockGuard` for
