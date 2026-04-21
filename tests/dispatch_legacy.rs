@@ -39,11 +39,3 @@ fn numeric_token_without_workspace_or_pr_errors_instead_of_creating_branch() {
         Runner::Legacy,
     );
 }
-
-#[test]
-fn pr_with_prompt_does_not_pass_continue() {
-    if skip_without_legacy() {
-        return;
-    }
-    dispatch_cases::pr_with_prompt_does_not_pass_continue(Runner::Legacy);
-}
