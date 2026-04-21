@@ -153,6 +153,10 @@ pub struct Runtime {
     pub repo_root: Option<std::path::PathBuf>,
     /// Absolute path to the loaded .devcli.toml, if one was found.
     pub config_path: Option<std::path::PathBuf>,
+    /// Directory treated as the config's anchor — parent of the loaded
+    /// `.devcli.toml` when present, else the main worktree so linked
+    /// worktrees inherit shared config/hooks as a single unit.
+    pub config_root: Option<std::path::PathBuf>,
     /// Effective stem (after autodetect).
     pub stem: String,
     /// Effective base branch (after autodetect).

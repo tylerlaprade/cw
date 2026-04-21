@@ -289,23 +289,22 @@ fn try_continue(cfg: &Config, dir: &Path) -> Result<bool> {
 }
 
 fn hook_path(cfg: &Config, dir: &Path) -> Option<PathBuf> {
-    if let Some(configured) = &cfg.restack.hook {
-        let p = dir.join(configured);
-        if p.is_file() {
-            return Some(p);
+    // Hook travels with the config: look at the current worktree first (local
+    // override), then the config root (where `.devcli.toml` was loaded from —
+    // typically the main worktree for linked worktrees).
+    let mut roots: Vec<PathBuf> = vec![dir.to_path_buf()];
+    if let Some(root) = &cfg.runtime.config_root {
+        if root != dir {
+            roots.push(root.clone());
         }
-        // Try resolving against repo root too.
-        if let Some(root) = &cfg.runtime.repo_root {
-            let p = root.join(configured);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        return None;
     }
-    // Default locations.
-    for candidate in ["scripts/cw-restack-hook.sh", ".cw/restack-hook.sh"] {
-        let p = dir.join(candidate);
+    let rel = cfg
+        .restack
+        .hook
+        .as_deref()
+        .unwrap_or("scripts/cw-restack-hook.sh");
+    for root in &roots {
+        let p = root.join(rel);
         if p.is_file() {
             return Some(p);
         }
@@ -369,7 +368,8 @@ pub fn resolve_cmd(args: ResolveArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::conflict_markers_present;
+    use super::{conflict_markers_present, hook_path};
+    use crate::config::schema::Config;
     use std::fs;
 
     #[test]
@@ -393,6 +393,39 @@ mod tests {
         let plain = dir.path().join("plain.txt");
         fs::write(&plain, "no conflicts here\n").unwrap();
         assert!(!conflict_markers_present(&plain).unwrap());
+    }
+
+    #[test]
+    fn hook_path_resolves_from_config_root_when_worktree_lacks_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let linked = tmp.path().join("linked");
+        fs::create_dir_all(main.join("scripts")).unwrap();
+        fs::create_dir(&linked).unwrap();
+        let hook = main.join("scripts/cw-restack-hook.sh");
+        fs::write(&hook, "#!/bin/sh\n").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.runtime.config_root = Some(main.clone());
+
+        assert_eq!(hook_path(&cfg, &linked), Some(hook));
+    }
+
+    #[test]
+    fn hook_path_prefers_local_worktree_over_config_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let linked = tmp.path().join("linked");
+        fs::create_dir_all(main.join("scripts")).unwrap();
+        fs::create_dir_all(linked.join("scripts")).unwrap();
+        fs::write(main.join("scripts/cw-restack-hook.sh"), "# main\n").unwrap();
+        let local = linked.join("scripts/cw-restack-hook.sh");
+        fs::write(&local, "# local\n").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.runtime.config_root = Some(main);
+
+        assert_eq!(hook_path(&cfg, &linked), Some(local));
     }
 }
 

@@ -22,9 +22,15 @@ pub fn load(cwd: &Path) -> Result<Config> {
         },
         None => (None, Config::default()),
     };
+    let config_root = path
+        .as_ref()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .or_else(|| repo_root.as_deref().and_then(main_worktree))
+        .or_else(|| repo_root.clone());
     cfg.runtime = Runtime {
         repo_root: repo_root.clone(),
         config_path: path,
+        config_root,
         stem: autodetect_stem(&cfg, repo_root.as_deref()),
         base_branch: autodetect_base_branch(&cfg, repo_root.as_deref()),
     };
