@@ -138,7 +138,9 @@ pub fn open(target: Option<String>, emitter: &mut Emitter) -> Result<()> {
     // CD into the workspace first.
     emitter.emit(Record::Cd(&r.dir.to_string_lossy()));
     if let Some(n) = r.number {
-        emitter.emit(Record::Title(&format!("#{}", n)));
+        if n != 0 {
+            emitter.emit(Record::Title(&format!("#{}", n)));
+        }
     }
     // Then request the shell to invoke `cw serve start --open` in foreground.
     let argv = vec![
@@ -301,7 +303,9 @@ fn enter_workspace(
 ) -> Result<()> {
     emitter.emit(Record::Cd(&r.dir.to_string_lossy()));
     if let Some(n) = r.number {
-        emitter.emit(Record::Title(&format!("#{}", n)));
+        if n != 0 {
+            emitter.emit(Record::Title(&format!("#{}", n)));
+        }
     }
     if let Some(hook) = &cfg.hooks.post_cd {
         let argv = vec!["bash".into(), "-c".into(), post_cd_command(&r, hook)];

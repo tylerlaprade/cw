@@ -63,6 +63,17 @@ fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
 
 fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
     let root = cfg.runtime.repo_root.as_deref()?;
+    if n == 0 {
+        let dir = worktree::main_worktree(root).unwrap_or_else(|| root.to_path_buf());
+        let branch = current_branch(&dir);
+        let pr = branch.as_deref().and_then(|b| github::pr_for_branch(&dir, b));
+        return Some(Resolved {
+            number: Some(0),
+            dir,
+            branch,
+            pr,
+        });
+    }
     let parent = root.parent()?;
     let dir = parent.join(format!("{}_{}", cfg.runtime.stem, n));
     if !dir.is_dir() {

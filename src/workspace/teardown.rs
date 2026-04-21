@@ -96,6 +96,9 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
             );
             continue;
         };
+        if n == 0 {
+            anyhow::bail!("refuse to remove workspace 0 (repo root)");
+        }
         let databases = database_names_for(cfg, n);
         let plan = build_plan(cfg, n, r, databases, &cwd)?;
         plans.push(plan);

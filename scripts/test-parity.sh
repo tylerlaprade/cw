@@ -214,6 +214,46 @@ case_restack_target() {
     assert_contains_file "$LAST_EVENTS" $'TITLE\t#11' "$PARITY_IMPL: cw restack 11 emits workspace title"
 }
 
+assert_not_contains_file() {
+    TESTS_RUN=$((TESTS_RUN + 1))
+    local file="$1" needle="$2" name="$3"
+    if grep -Fq -- "$needle" "$file"; then
+        _fail "$name" "unexpected match: $needle" "file: $file" "contents: $(cat "$file" 2>/dev/null)"
+    else
+        _pass "$name"
+    fi
+}
+
+case_zero_enters_repo_root() {
+    setup_case_repo "$(mktemp -d)"
+    run_case "zero-enter" "$CASE_ROOT/condor_11" 0
+    assert_rc 0 "$LAST_RC" "$PARITY_IMPL: cw 0 succeeds"
+    assert_equals "$(normalize_path "$REPO")" "$(last_event_value CWD "$LAST_EVENTS")" "$PARITY_IMPL: cw 0 changes cwd to repo root"
+    assert_not_contains_file "$LAST_EVENTS" $'TITLE\t#0' "$PARITY_IMPL: cw 0 does not emit a workspace title"
+}
+
+case_open_zero() {
+    setup_case_repo "$(mktemp -d)"
+    run_case "open-zero" "$CASE_ROOT/condor_11" open 0
+    assert_rc 0 "$LAST_RC" "$PARITY_IMPL: cw open 0 succeeds"
+    assert_equals "$(normalize_path "$REPO")" "$(last_event_value CWD "$LAST_EVENTS")" "$PARITY_IMPL: cw open 0 changes cwd to repo root"
+    assert_not_contains_file "$LAST_EVENTS" $'TITLE\t#0' "$PARITY_IMPL: cw open 0 does not emit a workspace title"
+    assert_contains_file "$LAST_EVENTS" $'EXEC\tcw\tserve\tstart\t--open' "$PARITY_IMPL: cw open 0 requests serve open"
+}
+
+case_restack_zero() {
+    setup_case_repo "$(mktemp -d)"
+    # Install a restack.sh at the repo root so the legacy restack path has a
+    # target to invoke. The parity harness already installs per-workspace ones.
+    install_executable "$REPO/restack.sh" '#!/usr/bin/env bash
+printf "RESTACK\t%s\n" "$(pwd -P)" >>"$CW_PARITY_EVENTS"
+'
+    run_case "restack-zero" "$CASE_ROOT/condor_11" restack 0
+    assert_rc 0 "$LAST_RC" "$PARITY_IMPL: cw restack 0 succeeds"
+    assert_equals "$(normalize_path "$REPO")" "$(last_event_value CWD "$LAST_EVENTS")" "$PARITY_IMPL: cw restack 0 changes cwd to repo root"
+    assert_not_contains_file "$LAST_EVENTS" $'TITLE\t#0' "$PARITY_IMPL: cw restack 0 does not emit a workspace title"
+}
+
 run_mode() {
     PARITY_IMPL="$1"
     export PARITY_IMPL
@@ -224,6 +264,9 @@ run_mode() {
     case_open_target
     case_open_current_workspace
     case_restack_target
+    case_zero_enters_repo_root
+    case_open_zero
+    case_restack_zero
 }
 
 case "$MODE" in
