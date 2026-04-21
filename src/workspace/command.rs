@@ -103,12 +103,6 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                     parent: None,
                 },
             )?;
-            emitter.emit(Record::Msg(&format!(
-                "✓ workspace {} ready at {} (branch {})",
-                r.number,
-                r.dir.display(),
-                r.branch
-            )));
             let resolved = resolve::Resolved {
                 dir: r.dir,
                 number: Some(r.number),
