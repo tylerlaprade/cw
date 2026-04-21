@@ -14,8 +14,15 @@ cw() {
     _rc=$?
     (( _rc != 0 )) && return $_rc
     [[ -z "$_out" ]] && return 0
+    # Iterate via array split, NOT `while read <<< "$_out"` — the here-string
+    # would pin the loop's stdin to the record payload, so any EXEC inside
+    # would inherit that drained fd instead of the user's terminal. This
+    # previously required `EXEC "${_argv[@]}" </dev/tty` as a workaround,
+    # which broke TUIs (Bun/Ink in Claude Code) that expect fd 0 to be the
+    # controlling terminal at process start, not a reopen of /dev/tty.
     local _line
-    while IFS= read -r _line; do
+    local -a _lines=("${(@f)_out}")
+    for _line in "${_lines[@]}"; do
         local -a _parts
         # Split on literal TAB; p-flag so \t in the separator string is parsed.
         _parts=("${(@ps:\t:)_line}")
@@ -30,11 +37,11 @@ cw() {
             CD)        (( ${#_argv[@]} )) && builtin cd -- "${_argv[1]}" ;;
             TITLE)     printf '\033]0;%s\007' "${_argv[1]}" ;;
             MSG)       print -u2 -- "${_argv[1]}" ;;
-            EXEC)      "${_argv[@]}" </dev/tty ;;
+            EXEC)      "${_argv[@]}" ;;
             EXEC_BG)   { "${_argv[@]}" & } 2>/dev/null ; disown 2>/dev/null ;;
             CLOSE_TAB) _close=1 ;;
         esac
-    done <<< "$_out"
+    done
     (( _close )) && kill -HUP $$ 2>/dev/null
     return 0
 }
