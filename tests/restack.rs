@@ -197,6 +197,60 @@ exit 0
 }
 
 #[test]
+fn restack_creates_workspace_when_pr_has_no_worktree() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("condor");
+    init_repo(&repo);
+    commit_file(&repo, "README.md", "root\n", "root");
+
+    let mock_bin = tmp.path().join("bin");
+    fs::create_dir(&mock_bin).unwrap();
+    make_executable(
+        &mock_bin.join("gh"),
+        r#"#!/bin/sh
+# Only handle `gh pr view 8641 ...` — emit the tsv our parser expects.
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$3" = "8641" ]; then
+    printf 'OPEN\tfeat-ws\tdevelop\n'
+    exit 0
+fi
+exit 1
+"#,
+    );
+    make_executable(
+        &mock_bin.join("gt"),
+        r#"#!/bin/sh
+exit 0
+"#,
+    );
+
+    let path = format!("{}:/usr/bin:/bin", mock_bin.display());
+    let out = run_cw(
+        &repo,
+        &path,
+        &[("CW_WRAPPER", "1")],
+        &["restack", "8641"],
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    let expected_ws = tmp.path().join("condor_1");
+    assert!(
+        expected_ws.is_dir(),
+        "expected workspace at {} — stdout={stdout:?} stderr={stderr:?}",
+        expected_ws.display()
+    );
+    assert!(
+        stdout.contains("Found PR #8641 \u{2192} feat-ws"),
+        "stdout missing PR announce: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("Workspace 1 ready!"),
+        "stdout missing ready banner: {stdout:?}"
+    );
+}
+
+#[test]
 fn restack_keeps_files_unmerged_when_markers_remain() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");

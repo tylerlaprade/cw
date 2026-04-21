@@ -4,8 +4,9 @@ pub mod resolvers;
 
 use crate::cli::{ResolveArgs, RestackArgs};
 use crate::config::{self, Config};
+use crate::git::github;
 use crate::shell::{Emitter, Record};
-use crate::workspace::resolve;
+use crate::workspace::{create, resolve};
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::process::{Command, Output};
 pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cfg = config::discover::load(&cwd)?;
-    let r = resolve::resolve(&cfg, &cwd, args.target.as_deref())?;
+    let r = resolve_or_create(&cfg, &cwd, args.target.as_deref())?;
     let dir = r.dir.clone();
     emit_shell_state(emitter, &cwd, &r);
 
@@ -24,6 +25,66 @@ pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
         restore_stash(&dir);
     }
     out
+}
+
+/// Resolve the restack target, falling back to workspace creation when the
+/// target is an open PR (or branch) that has no worktree yet. Mirrors Bash
+/// `_cw_find_or_create_workspace` in `cw.sh` for the restack path.
+fn resolve_or_create(
+    cfg: &Config,
+    cwd: &Path,
+    target: Option<&str>,
+) -> Result<resolve::Resolved> {
+    let err = match resolve::resolve(cfg, cwd, target) {
+        Ok(r) => return Ok(r),
+        Err(e) => e,
+    };
+    let Some(t) = target else {
+        return Err(err);
+    };
+
+    let (branch, pr_num) = if let Ok(n) = t.parse::<u32>() {
+        let cap = cfg.workspace.max_count.unwrap_or(99);
+        if n <= cap {
+            return Err(err);
+        }
+        let root = cfg
+            .runtime
+            .repo_root
+            .as_deref()
+            .context("no repo root discovered")?;
+        let pr = match github::view_pr(root, n) {
+            Ok(pr) => pr,
+            Err(_) => return Err(err),
+        };
+        if pr.state != "OPEN" {
+            anyhow::bail!(
+                "PR #{n} ({}) is {} and has no workspace — create one first",
+                pr.head_branch,
+                pr.state.to_lowercase()
+            );
+        }
+        println!("Found PR #{n} → {}", pr.head_branch);
+        (pr.head_branch, Some(n))
+    } else {
+        (t.to_string(), None)
+    };
+
+    let result = create::create(
+        cfg,
+        cwd,
+        create::CreateOpts {
+            subject: branch,
+            stack: false,
+            parent: None,
+        },
+    )?;
+    Ok(resolve::Resolved {
+        dir: result.dir,
+        number: Some(result.number),
+        branch: Some(result.branch),
+        pr: pr_num,
+    })
 }
 
 fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
