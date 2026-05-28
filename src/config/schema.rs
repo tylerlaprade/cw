@@ -18,6 +18,8 @@ pub struct Config {
     pub restack: RestackCfg,
     #[serde(default)]
     pub hooks: HooksCfg,
+    #[serde(default)]
+    pub env: EnvCfg,
 
     /// Computed at runtime, not read from file.
     #[serde(skip)]
@@ -117,6 +119,31 @@ pub struct HooksCfg {
     pub post_create: Option<String>,
     pub pre_remove: Option<String>,
     pub post_cd: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct EnvCfg {
+    /// Files to copy verbatim from source worktree to new worktree.
+    #[serde(default)]
+    pub copy: Vec<String>,
+    /// Per-file strip rules: remove matching lines (regex) after copy.
+    #[serde(default)]
+    pub strip: Vec<EnvStrip>,
+    /// Per-file line injection (with {n}, {stem}, {port} substitution).
+    #[serde(default)]
+    pub inject: Vec<EnvInject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvStrip {
+    pub file: String,
+    pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvInject {
+    pub file: String,
+    pub line: String,
 }
 
 /// Values populated by the loader, not from the file.
