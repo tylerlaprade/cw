@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Numbered-workspace dev-CLI: worktree + services + restack + triage"
+license = "MIT"
+repository = "https://github.com/tylerlaprade/cw"
+authors = ["Tyler LaPrade <pinkmonkeyblue@gmail.com>"]
+readme = "README.md"
+keywords = ["worktree", "workspace", "cli", "git", "devx"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "cw"

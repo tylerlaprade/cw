@@ -27,24 +27,15 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    let cli = Cli::parse();
     let mut emitter = shell::Emitter::from_env();
 
-    let rc = match cli.command {
-        Command::ShellInit { shell } => shell::init::run(shell),
-        Command::Doctor => doctor::run(),
-        Command::Config { action } => config::command::run(action),
-        Command::Serve(args) => serve::run(args, &mut emitter),
-        Command::Open { target } => workspace::command::open(target, &mut emitter),
-        Command::Restack(args) => restack::run(args, &mut emitter),
-        Command::Resolve(args) => restack::resolve_cmd(args),
-        Command::Remove(args) => workspace::command::remove(args, &mut emitter),
-        Command::Cleanup(args) => cleanup::run(args, &mut emitter),
-        Command::Triage(args) => triage::run(args),
-        Command::Workspace(args) => workspace::command::dispatch(args, &mut emitter),
-        Command::Init => config::init::run(),
-        Command::Completions { shell } => emit_completions(shell),
-        Command::Default(rest) => workspace::command::default_dispatch(rest, &mut emitter),
+    // Route BEFORE clap: bare `cw <description|N|PR#|branch>` and every
+    // leading-flag form (`cw -s …`, `cw --stack …`, `cw --pr N`, `cw --continue`)
+    // are not clap subcommands — clap rejects a leading flag with "unexpected
+    // argument", which used to make the documented stacking workflow unusable.
+    let rc = match dispatcher_args(&std::env::args().collect::<Vec<_>>()) {
+        Some(rest) => workspace::command::default_dispatch(rest, &mut emitter),
+        None => run_subcommand(Cli::parse().command, &mut emitter),
     };
 
     match rc {
@@ -53,6 +44,107 @@ fn main() -> Result<()> {
             eprintln!("{} {:#}", "error:".red().bold(), e);
             std::process::exit(1);
         }
+    }
+}
+
+/// Known clap subcommand names. Anything else as the first arg (a number, a
+/// description, or a leading flag) belongs to the bare dispatcher.
+const SUBCOMMANDS: &[&str] = &[
+    "shell-init",
+    "doctor",
+    "config",
+    "serve",
+    "open",
+    "restack",
+    "resolve",
+    "remove",
+    "cleanup",
+    "triage",
+    "workspace",
+    "init",
+    "completions",
+];
+
+/// Returns `Some(dispatcher_args)` when argv should go to `default_dispatch`,
+/// or `None` when it's a real clap subcommand / help / version request.
+fn dispatcher_args(argv: &[String]) -> Option<Vec<String>> {
+    match argv.get(1).map(String::as_str) {
+        None => Some(Vec::new()), // bare `cw` → dispatcher prints its own usage
+        Some("-h" | "--help" | "-V" | "--version") => None,
+        Some(first) if SUBCOMMANDS.contains(&first) => None,
+        Some(_) => Some(argv[1..].to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::dispatcher_args;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        std::iter::once("cw")
+            .chain(parts.iter().copied())
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn leading_flags_route_to_dispatcher() {
+        // The bug: clap rejected leading flags. They must reach the dispatcher.
+        for case in [&["-s", "fix bug"][..], &["--stack", "x"], &["--pr", "7"], &["--continue"]] {
+            assert!(
+                dispatcher_args(&argv(case)).is_some(),
+                "{case:?} should route to the dispatcher"
+            );
+        }
+    }
+
+    #[test]
+    fn descriptions_and_numbers_route_to_dispatcher() {
+        assert!(dispatcher_args(&argv(&["fix", "the", "thing"])).is_some());
+        assert!(dispatcher_args(&argv(&["5"])).is_some());
+        assert!(dispatcher_args(&argv(&["7543"])).is_some());
+    }
+
+    #[test]
+    fn bare_cw_routes_to_dispatcher_help() {
+        assert_eq!(dispatcher_args(&argv(&[])), Some(Vec::new()));
+    }
+
+    #[test]
+    fn subcommands_and_help_go_to_clap() {
+        for case in [
+            &["serve", "start"][..],
+            &["restack"],
+            &["workspace", "list"],
+            &["remove", "3"],
+            &["triage"],
+            &["-h"],
+            &["--help"],
+            &["--version"],
+        ] {
+            assert!(
+                dispatcher_args(&argv(case)).is_none(),
+                "{case:?} should go to clap"
+            );
+        }
+    }
+}
+
+fn run_subcommand(command: Command, emitter: &mut shell::Emitter) -> Result<()> {
+    match command {
+        Command::ShellInit { shell } => shell::init::run(shell),
+        Command::Doctor => doctor::run(),
+        Command::Config { action } => config::command::run(action),
+        Command::Serve(args) => serve::run(args, emitter),
+        Command::Open { target } => workspace::command::open(target, emitter),
+        Command::Restack(args) => restack::run(args, emitter),
+        Command::Resolve(args) => restack::resolve_cmd(args),
+        Command::Remove(args) => workspace::command::remove(args, emitter),
+        Command::Cleanup(args) => cleanup::run(args, emitter),
+        Command::Triage(args) => triage::run(args),
+        Command::Workspace(args) => workspace::command::dispatch(args, emitter),
+        Command::Init => config::init::run(),
+        Command::Completions { shell } => emit_completions(shell),
     }
 }
 

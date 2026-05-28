@@ -156,12 +156,13 @@ fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
             continue;
         };
         let port = u32::from(port_cfg.base) + number;
-        let label = match svc.name.as_str() {
-            "frontend" => "Frontend: ",
-            "backend" => "Backend:  ",
-            _ => continue,
-        };
-        println!("  {label} http://localhost:{port}");
+        // Title-case the configured service name — works for ANY service, not
+        // just the autodetected "frontend"/"backend".
+        let mut label = svc.name.clone();
+        if let Some(first) = label.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        println!("  {label}: http://localhost:{port}");
     }
     if let Some(db) = &cfg.databases {
         let prefix = db
@@ -171,11 +172,13 @@ fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
         println!("  Database:  {prefix}");
     }
     println!();
-    println!("Start with: cd {} && ./serve.sh start", dir.display());
+    // Tool-native instruction — `./serve.sh` is the company script and does not
+    // exist in a generic repo.
+    println!("Start with: cw open {number}");
     println!();
-    eprintln!("⚠ Background setup still running (deps, DB clone, migrations).");
+    eprintln!("⚠ Background setup still running.");
     eprintln!("  Tail progress: tail -f {}", setup_log.display());
-    eprintln!("  Wait for SETUP_DONE before running the server.");
+    eprintln!("  Wait for SETUP_DONE before starting services.");
 }
 
 /// Reserve the lowest-available workspace number and hold a `LockGuard` for
@@ -535,8 +538,20 @@ fn kick_off_setup(dir: &Path, cfg: &Config, log: &Path) -> Result<()> {
 
 fn autodetect_dep_installs(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    for entry in top_level_dirs(root) {
-        let dirname = entry.file_name().unwrap().to_string_lossy().into_owned();
+    // Scan the repo root itself (single-package layout) plus every top-level
+    // subdir (monorepo). Without the root, a single-package repo got no
+    // background dependency install on workspace creation.
+    let candidates =
+        std::iter::once((root.to_path_buf(), ".".to_string())).chain(top_level_dirs(root).into_iter().map(
+            |d| {
+                let name = d
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| ".".into());
+                (d, name)
+            },
+        ));
+    for (entry, dirname) in candidates {
         if entry.join("pyproject.toml").is_file() && entry.join("uv.lock").is_file() {
             out.push(format!("( cd {} && uv sync )", shell_quote(&dirname)));
         } else if entry.join("bun.lock").is_file() || entry.join("bun.lockb").is_file() {

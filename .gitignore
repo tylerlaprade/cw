@@ -3,3 +3,4 @@ Cargo.lock.bak
 CLAUDE.local.md
 .devcli.toml
 .DS_Store
+.session-salvage/

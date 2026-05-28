@@ -71,7 +71,7 @@ and fall through to PR lookup when no matching worktree exists.
 
 A `.devcli.toml` is only needed when you want to:
 
-- Cap workspace count (Auth0 callback constraints, etc): `[workspace] max_count`
+- Cap workspace count (e.g. an upstream limit on OAuth callback URLs): `[workspace] max_count`
 - Pre-start hooks per service (`[[services]]` with `pre_start` / `start_env`)
 - Clone per-workspace databases: `[databases] pattern`, `suffixes`, `clone`
 - Hand off restack customization to a repo-specific hook:
@@ -121,4 +121,4 @@ in git.
 
 ## License
 
-TBD.
+MIT — see [LICENSE](LICENSE).

@@ -89,13 +89,33 @@ fn merge_service(dst: &mut ServiceCfg, src: ServiceCfg) {
 fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
     let mut out = Vec::new();
 
-    // Backend: any top-level subdir containing manage.py → Django.
-    for entry in top_level_dirs(root) {
-        if entry.join("manage.py").is_file() {
-            let subdir = entry.file_name().unwrap().to_string_lossy().into_owned();
+    // Candidate dirs: the repo root itself (single-package layout — the common
+    // non-monorepo case) FIRST, then each top-level subdir (monorepo layout).
+    // Without the root candidate, a single-package repo autodetected to nothing.
+    let candidates: Vec<(PathBuf, String)> = std::iter::once((root.to_path_buf(), ".".to_string()))
+        .chain(top_level_dirs(root).into_iter().map(|d| {
+            let name = d
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into());
+            (d, name)
+        }))
+        .collect();
+
+    let alias = |short: &str, subdir: &str| {
+        let mut a = vec![short.to_string()];
+        if subdir != "." {
+            a.push(subdir.to_string());
+        }
+        a
+    };
+
+    // Backend: first candidate containing manage.py → Django.
+    for (dir, subdir) in &candidates {
+        if dir.join("manage.py").is_file() {
             out.push(ServiceCfg {
                 name: "backend".into(),
-                alias: vec!["be".into(), subdir.clone()],
+                alias: alias("be", subdir),
                 subdir: Some(subdir.clone()),
                 port: Some(PortCfg { base: 8000 }),
                 start: Some("python manage.py runserver {port}".into()),
@@ -103,6 +123,7 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
                 venv: Some(".venv/bin/activate".into()),
                 pid_file: Some("/tmp/{stem}_{n}_backend.pid".into()),
                 log_file: Some("/tmp/{stem}_{n}_backend.log".into()),
+                // Port-scoped: each workspace's runserver port is unique.
                 stop_patterns: vec!["manage.py runserver {port}".into()],
                 pre_start: None,
                 open_url: None,
@@ -111,21 +132,27 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
         }
     }
 
-    // Frontend: any top-level subdir with package.json that has a "dev"
-    // or "start" script.
-    for entry in top_level_dirs(root) {
-        if has_frontend_package(&entry) {
-            let subdir = entry.file_name().unwrap().to_string_lossy().into_owned();
-            let start = if entry.join("vite.config.ts").is_file()
-                || entry.join("vite.config.js").is_file()
+    // Frontend: first candidate with package.json exposing a "dev"/"start" script.
+    for (dir, subdir) in &candidates {
+        if has_frontend_package(dir) {
+            let start = if dir.join("vite.config.ts").is_file()
+                || dir.join("vite.config.js").is_file()
             {
                 "npm start -- --port {port}"
             } else {
                 "npm run dev -- --port {port}"
             };
+            // Workspace-scope the kill pattern with {stem}_{n}; otherwise
+            // `cw serve stop` for one workspace matches (and kills) every other
+            // workspace's frontend, since pkill -f is a substring match.
+            let node_path = if subdir == "." {
+                "{stem}_{n}/node_modules".to_string()
+            } else {
+                format!("{{stem}}_{{n}}/{subdir}/node_modules")
+            };
             out.push(ServiceCfg {
                 name: "frontend".into(),
-                alias: vec!["fe".into(), subdir.clone()],
+                alias: alias("fe", subdir),
                 subdir: Some(subdir.clone()),
                 port: Some(PortCfg { base: 3000 }),
                 start: Some(start.into()),
@@ -133,7 +160,7 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
                 venv: None,
                 pid_file: Some("/tmp/{stem}_{n}_frontend.pid".into()),
                 log_file: Some("/tmp/{stem}_{n}_frontend.log".into()),
-                stop_patterns: vec![format!("{subdir}/node_modules.*vite")],
+                stop_patterns: vec![format!("{node_path}.*vite")],
                 pre_start: None,
                 open_url: Some("http://localhost:{port}".into()),
             });

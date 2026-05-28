@@ -5,9 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     name = "cw",
     version,
     about = "Numbered-workspace dev-CLI",
-    disable_help_subcommand = true,
-    trailing_var_arg = true,
-    allow_external_subcommands = true
+    disable_help_subcommand = true
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -55,9 +53,6 @@ pub enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Default dispatcher: bare `cw <description|N|PR#|branch>`.
-    #[command(external_subcommand)]
-    Default(Vec<String>),
 }
 
 #[derive(Subcommand, Debug)]

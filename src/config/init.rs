@@ -189,7 +189,7 @@ const SCAFFOLD: &str = "\
 # [[services]]
 # name          = \"backend\"
 # alias         = [\"be\", \"api\"]
-# subdir        = \"hanaq\"
+# subdir        = \"server\"
 # port.base     = 8000
 # start         = \"python manage.py runserver {port}\"
 # venv          = \".venv/bin/activate\"
@@ -214,7 +214,7 @@ const SCAFFOLD: &str = "\
 # [deps]
 # parallel = true
 # install  = [
-#   { dir = \"hanaq\", cmd = \"uv sync\" },
+#   { dir = \"server\", cmd = \"uv sync\" },
 #   { dir = \"web\",   cmd = \"npm ci\"  },
 # ]
 
@@ -249,7 +249,7 @@ const SCAFFOLD: &str = "\
 # [env] — copy + mutate env files into each new workspace.
 # ---------------------------------------------------------------------------
 # [env]
-# copy = [\".env\", \"hanaq/.env.local\"]
+# copy = [\".env\", \"server/.env.local\"]
 #
 # [[env.strip]]
 # file     = \".env\"
