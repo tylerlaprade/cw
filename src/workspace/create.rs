@@ -401,7 +401,7 @@ fn copy_envs(src: &Path, dst: &Path, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-fn autodetect_env_files(root: &Path) -> Vec<String> {
+pub(crate) fn autodetect_env_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for name in [".env", ".env.local"] {
         if root.join(name).is_file() {
@@ -629,7 +629,7 @@ fn db_clone_snippet(
     Some(format!("{{ {}; wait; }}", clones.join(" & ")))
 }
 
-fn autodetect_dep_installs(root: &Path) -> Vec<String> {
+pub(crate) fn autodetect_dep_installs(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     // Scan the repo root itself (single-package layout) plus every top-level
     // subdir (monorepo). Without the root, a single-package repo got no

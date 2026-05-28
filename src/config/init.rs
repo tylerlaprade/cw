@@ -42,12 +42,26 @@ pub fn run() -> Result<()> {
     let mut overrides: Vec<String> = Vec::new();
 
     let max_count = if is_tty {
-        Text::new("Maximum workspace count (leave blank for unlimited):")
+        // J6: propagate Ctrl-C via `?` (don't silently treat an interrupt as
+        // "unlimited"); surface a note when the input is non-numeric.
+        let raw = Text::new("Maximum workspace count (leave blank for unlimited):")
             .with_default("")
-            .prompt()
-            .ok()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| s.parse::<u32>().ok())
+            .prompt()?;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            None
+        } else {
+            match raw.parse::<u32>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    eprintln!(
+                        "  {} ignoring non-numeric max_count {raw:?} (leaving unlimited)",
+                        "·".dimmed()
+                    );
+                    None
+                }
+            }
+        }
     } else {
         None
     };
@@ -60,8 +74,7 @@ pub fn run() -> Result<()> {
     let want_db = if is_tty {
         Confirm::new("Configure per-workspace databases?")
             .with_default(false)
-            .prompt()
-            .unwrap_or(false)
+            .prompt()?
     } else {
         false
     };
@@ -73,10 +86,12 @@ pub fn run() -> Result<()> {
             .with_default("qa")
             .prompt()?;
         overrides.push("[databases]".into());
-        overrides.push(format!("pattern  = \"{}\"", pattern));
+        // J5: escape user input so a stray quote/backslash can't produce an
+        // unparseable .devcli.toml.
+        overrides.push(format!("pattern  = {}", toml_str(&pattern)));
         let s_list = suffixes
             .split(',')
-            .map(|s| format!("\"{}\"", s.trim()))
+            .map(|s| toml_str(s.trim()))
             .collect::<Vec<_>>()
             .join(", ");
         overrides.push(format!("suffixes = [{}]", s_list));
@@ -87,8 +102,7 @@ pub fn run() -> Result<()> {
     let want_hook = if is_tty {
         Confirm::new("Add a restack hook stub script?")
             .with_default(false)
-            .prompt()
-            .unwrap_or(false)
+            .prompt()?
     } else {
         false
     };
@@ -140,6 +154,28 @@ pub fn run() -> Result<()> {
          see the effective merged config."
     );
     Ok(())
+}
+
+/// Quote + escape a string as a TOML basic string, so user input containing a
+/// quote or backslash can't produce an unparseable `.devcli.toml`.
+fn toml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toml_str;
+
+    #[test]
+    fn toml_str_escapes_quotes_and_backslashes() {
+        assert_eq!(toml_str("app_{n}_{suffix}"), "\"app_{n}_{suffix}\"");
+        assert_eq!(toml_str(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(toml_str(r"a\b"), r#""a\\b""#);
+        // The escaped output must round-trip through the TOML parser.
+        let v: toml::Value =
+            toml::from_str(&format!("k = {}", toml_str(r#"weird"\val"#))).unwrap();
+        assert_eq!(v["k"].as_str().unwrap(), r#"weird"\val"#);
+    }
 }
 
 const HEADER: &str = "\

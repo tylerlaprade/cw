@@ -272,7 +272,9 @@ fn autodetect_stem(cfg: &Config, root: Option<&Path>) -> String {
 
 fn strip_trailing_number_suffix(name: &str) -> String {
     if let Some(idx) = name.rfind('_') {
-        if name[idx + 1..].chars().all(|c| c.is_ascii_digit()) && idx + 1 < name.len() {
+        // J7: require a non-empty stem before the `_` (idx > 0), so a bare
+        // "_5" doesn't strip down to an empty stem.
+        if idx > 0 && idx + 1 < name.len() && name[idx + 1..].chars().all(|c| c.is_ascii_digit()) {
             return name[..idx].to_string();
         }
     }
