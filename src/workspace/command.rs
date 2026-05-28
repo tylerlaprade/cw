@@ -82,6 +82,21 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
     match resolved {
         Some(r) => enter_workspace(&cfg, r, flags, emitter, false),
         None => {
+            // C2: a single branch-like token (contains -, _, or /) that
+            // resolved to nothing is almost always a typo'd branch name, not a
+            // request to create a phantom branch off base. Refuse — multi-word
+            // descriptions and `--stack` slugs are still allowed.
+            if !flags.stack
+                && create_from_pr.is_none()
+                && positional.len() == 1
+                && head.contains(|c| matches!(c, '-' | '_' | '/'))
+            {
+                anyhow::bail!(
+                    "{head:?} looks like a branch name but doesn't exist locally or on origin.\n  \
+                     To start new work with this name, use spaces: cw <description>"
+                );
+            }
+
             // No existing target — create a fresh workspace. For PR-create,
             // branch comes from the PR and prompt stays as tail only. For
             // description-create, the whole positional (head + tail) is both
@@ -307,6 +322,23 @@ fn enter_workspace(
             emitter.emit(Record::Title(&format!("#{}", n)));
         }
     }
+
+    // C5: on re-entry, warn if this workspace's background setup hasn't
+    // finished (deps/DB/hooks) — the create path prints this on first entry.
+    if !first_entry {
+        if let Some(n) = r.number.filter(|n| *n != 0) {
+            let log = format!("/tmp/{}_{}_setup.log", cfg.runtime.stem, n);
+            if std::fs::read_to_string(&log)
+                .map(|c| !c.contains("SETUP_DONE"))
+                .unwrap_or(false)
+            {
+                emitter.emit(Record::Msg(&format!(
+                    "⚠ Background setup still running. Tail: tail -f {log}"
+                )));
+            }
+        }
+    }
+
     if let Some(hook) = &cfg.hooks.post_cd {
         let argv = vec!["bash".into(), "-c".into(), post_cd_command(&r, hook)];
         emitter.emit(Record::Exec(&argv));
@@ -319,35 +351,45 @@ fn enter_workspace(
     Ok(())
 }
 
+/// Assemble the `claude` launch argv, mirroring the original `_cw_enter`:
+///   pr + prompt → claude [--continue] --name <branch> --from-pr <pr> <prompt>
+///   pr, no prompt → claude --name <branch> --from-pr <pr>
+///   no pr, prompt → claude [--continue] <prompt>
+///   nothing actionable → no launch (bare re-entry just cd's)
+/// `--continue` is one more flag that AUGMENTS the argv (it does not replace
+/// the rest); it's auto-added on re-entry-with-prompt and whenever the user
+/// passes `--continue`. `--name`/`--from-pr` appear only for PR sessions.
 fn compose_editor_launch(
     r: &resolve::Resolved,
     flags: &LaunchFlags,
     first_entry: bool,
 ) -> Option<Vec<String>> {
-    // Explicit --continue wins.
-    if flags.continue_session {
-        return Some(vec!["claude".into(), "--continue".into()]);
-    }
-
     let has_prompt = flags.prompt.is_some();
+    let pr = flags.pr_override.or(r.pr);
 
-    // Auto-launch Claude only on first entry, or when the user supplied a
-    // prompt / explicit PR override / --continue. Bare `cw 8564` should just
-    // enter the already-open workspace without trying to resume Claude.
-    if !first_entry && !has_prompt && flags.pr_override.is_none() {
+    // Nothing to act on → just enter the workspace (bare `cw 8564`).
+    if pr.is_none() && !has_prompt {
         return None;
     }
 
-    let pr = flags.pr_override.or(r.pr);
+    // Original auto-continues on re-entry that carries a prompt; an explicit
+    // --continue always applies. A first entry (fresh workspace) never auto-
+    // continues — there's no prior session to resume.
+    let cont = flags.continue_session || (!first_entry && has_prompt);
 
     let mut argv = vec!["claude".into()];
+    if cont {
+        argv.push("--continue".into());
+    }
     if let Some(n) = pr {
+        // --name is keyed to the PR session only (matches the original, which
+        // derived the session name from the PR, not the branch).
+        if let Some(branch) = &r.branch {
+            argv.push("--name".into());
+            argv.push(branch.clone());
+        }
         argv.push("--from-pr".into());
         argv.push(n.to_string());
-    }
-    if let Some(branch) = &r.branch {
-        argv.push("--name".into());
-        argv.push(branch.clone());
     }
     if let Some(p) = &flags.prompt {
         argv.push(p.clone());
@@ -418,10 +460,137 @@ fn pr_target(cfg: &Config, token: &str) -> Result<Option<PrTarget>> {
         Ok(pr) => pr,
         Err(_) => return Ok(None),
     };
+    // C3: a merged/closed PR with no existing worktree has nowhere to go —
+    // don't spin up a fresh workspace for already-landed/abandoned work.
+    // (When a worktree exists, resolve() finds it first and we never get here.)
+    if pr.state != "OPEN" {
+        anyhow::bail!(
+            "PR #{number} ({}) is {} and not checked out in any workspace",
+            pr.head_branch,
+            pr.state.to_lowercase()
+        );
+    }
     Ok(Some(PrTarget {
         number,
         branch: pr.head_branch,
     }))
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn resolved(branch: Option<&str>, pr: Option<u32>) -> resolve::Resolved {
+        resolve::Resolved {
+            dir: PathBuf::from("/tmp/app_3"),
+            number: Some(3),
+            branch: branch.map(String::from),
+            pr,
+        }
+    }
+
+    fn flags(prompt: Option<&str>, pr: Option<u32>, cont: bool) -> LaunchFlags {
+        LaunchFlags {
+            stack: false,
+            continue_session: cont,
+            pr_override: pr,
+            prompt: prompt.map(String::from),
+        }
+    }
+
+    #[test]
+    fn first_entry_description_launches_claude_with_prompt_only() {
+        let argv = compose_editor_launch(
+            &resolved(Some("fix-bug"), None),
+            &flags(Some("fix the bug"), None, false),
+            true,
+        );
+        assert_eq!(argv, Some(vec!["claude".into(), "fix the bug".into()]));
+    }
+
+    #[test]
+    fn first_entry_pr_create_has_no_continue() {
+        let argv = compose_editor_launch(
+            &resolved(Some("feat"), None),
+            &flags(None, Some(7543), false),
+            true,
+        );
+        assert_eq!(
+            argv,
+            Some(vec![
+                "claude".into(),
+                "--name".into(),
+                "feat".into(),
+                "--from-pr".into(),
+                "7543".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn reentry_with_prompt_auto_continues() {
+        let argv = compose_editor_launch(
+            &resolved(Some("feat"), None),
+            &flags(Some("keep going"), None, false),
+            false,
+        );
+        assert_eq!(
+            argv,
+            Some(vec!["claude".into(), "--continue".into(), "keep going".into()])
+        );
+    }
+
+    #[test]
+    fn reentry_no_prompt_with_pr_resumes_without_continue() {
+        // Bare `cw <N>` into a PR'd workspace resumes via --from-pr (the
+        // regression was launching nothing), and does NOT auto --continue.
+        let argv = compose_editor_launch(
+            &resolved(Some("feat"), Some(42)),
+            &flags(None, None, false),
+            false,
+        );
+        assert_eq!(
+            argv,
+            Some(vec![
+                "claude".into(),
+                "--name".into(),
+                "feat".into(),
+                "--from-pr".into(),
+                "42".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn reentry_no_prompt_no_pr_launches_nothing() {
+        let argv =
+            compose_editor_launch(&resolved(Some("feat"), None), &flags(None, None, false), false);
+        assert_eq!(argv, None);
+    }
+
+    #[test]
+    fn explicit_continue_augments_pr_and_prompt() {
+        // The regression: --continue dropped --from-pr/--name/prompt. It must
+        // augment them instead.
+        let argv = compose_editor_launch(
+            &resolved(Some("feat"), Some(9)),
+            &flags(Some("review"), None, true),
+            false,
+        );
+        assert_eq!(
+            argv,
+            Some(vec![
+                "claude".into(),
+                "--continue".into(),
+                "--name".into(),
+                "feat".into(),
+                "--from-pr".into(),
+                "9".into(),
+                "review".into()
+            ])
+        );
+    }
 }
 
 fn post_cd_command(r: &resolve::Resolved, hook: &str) -> String {

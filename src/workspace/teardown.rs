@@ -80,7 +80,26 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
     let cwd = std::env::current_dir()?;
     let targets = if targets.is_empty() {
         match paths::detect_number(&cwd, &cfg.runtime.stem) {
-            Some(n) => vec![n.to_string()],
+            Some(n) => {
+                // C5: no-arg removal targets the current workspace — confirm
+                // interactively (the original prompted [y/N]). --force skips it,
+                // and a non-tty (scripts/cleanup handoff) proceeds without asking.
+                if !opts.force && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    let name = cwd
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let ok = inquire::Confirm::new(&format!("Remove workspace {n} ({name})?"))
+                        .with_default(false)
+                        .prompt()
+                        .unwrap_or(false);
+                    if !ok {
+                        println!("Aborted.");
+                        return Ok(());
+                    }
+                }
+                vec![n.to_string()]
+            }
             None => anyhow::bail!(
                 "`cw remove` requires one or more targets unless run from inside a numbered workspace"
             ),
