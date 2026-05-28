@@ -21,13 +21,14 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
         anyhow::bail!("not inside a git repo");
     };
 
-    if !args.dry_run {
-        println!("{} git fetch --prune origin", "→".cyan());
-        let _ = Command::new("git")
-            .args(["fetch", "--prune", "origin"])
-            .current_dir(&root)
-            .status();
-    }
+    // I4: fetch+prune even on --dry-run so the stale/gone-branch preview is
+    // accurate (the original cleanup.sh always fetched). It only updates remote-
+    // tracking refs — no local work is touched.
+    println!("{} git fetch --prune origin", "→".cyan());
+    let _ = Command::new("git")
+        .args(["fetch", "--prune", "origin"])
+        .current_dir(&root)
+        .status();
 
     let entries = inventory::list_workspaces(&cfg)?;
     let stale: Vec<_> = entries
@@ -74,8 +75,8 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
     // Prune local branches (merged / remote-gone / closed-PR) that aren't
     // checked out in any worktree.
     if !args.dry_run {
-        prune_branches(&root);
-        delete_closed_pr_branches(&root);
+        prune_branches(&root, &cfg.runtime.base_branch);
+        delete_closed_pr_branches(&root, &cfg.runtime.base_branch);
     }
 
     // Orphaned DBs (pattern exists but no {stem}_{N} dir).
@@ -114,14 +115,15 @@ fn print_candidate(e: &inventory::Entry) {
 /// Delete local branches fully merged into base OR whose remote was pruned,
 /// excluding protected branches and any branch currently checked out in a
 /// worktree.
-fn prune_branches(root: &Path) {
-    let protected: HashSet<&str> =
-        ["develop", "main", "master", "release/qa", "release/staging"]
-            .into_iter()
-            .collect();
+fn prune_branches(root: &Path, base: &str) {
+    let protected = protected_branches(base);
 
     let checked_out = worktree_branches(root);
-    let merged = list_branches(root, &["branch", "--merged", "origin/develop", "--format=%(refname:short)"]);
+    let merged_ref = remote_or_local_base(root, base);
+    let merged = list_branches(
+        root,
+        &["branch", "--merged", &merged_ref, "--format=%(refname:short)"],
+    );
     let gone = gone_upstream_branches(root);
 
     let mut to_delete: Vec<String> = Vec::new();
@@ -150,7 +152,7 @@ fn prune_branches(root: &Path) {
 
 /// Delete local branches whose PR is closed (not merged — merged PRs are
 /// typically already handled via gone-upstream pruning).
-fn delete_closed_pr_branches(root: &Path) {
+fn delete_closed_pr_branches(root: &Path, base: &str) {
     let out = Command::new("gh")
         .args([
             "pr",
@@ -200,10 +202,7 @@ fn delete_closed_pr_branches(root: &Path) {
         return;
     }
     let checked_out = worktree_branches(root);
-    let protected: HashSet<&str> =
-        ["develop", "main", "master", "release/qa", "release/staging"]
-            .into_iter()
-            .collect();
+    let protected = protected_branches(base);
     for b in &closed_branches {
         if protected.contains(b.as_str()) || checked_out.contains(b) {
             continue;
@@ -223,6 +222,35 @@ fn delete_closed_pr_branches(root: &Path) {
             .args(["branch", "-D", b])
             .current_dir(root)
             .output();
+    }
+}
+
+/// Branches never pruned: the configured base plus the conventional trunk
+/// names (so we don't delete a trunk even if it isn't the configured base).
+fn protected_branches(base: &str) -> HashSet<String> {
+    let mut p: HashSet<String> = ["main", "master", "develop"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    p.insert(base.to_string());
+    p
+}
+
+/// `origin/<base>` when that remote-tracking ref exists, else the local base —
+/// so "merged into trunk" is judged against the remote like the original.
+fn remote_or_local_base(root: &Path, base: &str) -> String {
+    let remote = format!("origin/{base}");
+    let exists = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/remotes/{remote}"))
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if exists {
+        remote
+    } else {
+        base.to_string()
     }
 }
 
@@ -312,6 +340,12 @@ fn read_string_after(haystack: &str, from: usize) -> Option<(String, usize)> {
 }
 
 fn warn_orphaned_dbs(cfg: &Config, db: &crate::config::schema::DatabasesCfg) {
+    // I3: without {n} the pattern can't map a DB back to a workspace number, and
+    // the regex would have no capture group 1 (the old `caps.get(1).unwrap()`
+    // panicked). Nothing to cross-reference — skip.
+    if !db.pattern.contains("{n}") {
+        return;
+    }
     let stem = cfg.runtime.stem.clone();
     let suffix_group = db.suffixes.join("|");
     let pat = db
@@ -339,7 +373,9 @@ fn warn_orphaned_dbs(cfg: &Config, db: &crate::config::schema::DatabasesCfg) {
         let Some(caps) = re.captures(line) else {
             continue;
         };
-        let n: u32 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
+        let Some(n) = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok()) else {
+            continue;
+        };
         let dir = parent.join(format!("{}_{}", stem, n));
         if !dir.is_dir() {
             println!(
@@ -361,4 +397,21 @@ fn graphite_enabled(cfg: &Config) -> bool {
             .map(|p| std::env::split_paths(&p).any(|d| d.join("gt").is_file()))
             .unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protected_branches;
+
+    #[test]
+    fn protected_includes_base_and_trunks() {
+        // I1: a non-develop base (e.g. main) is protected, and the conventional
+        // trunks stay protected too — no hardcoded condor release/* branches.
+        let p = protected_branches("main");
+        assert!(p.contains("main"));
+        assert!(p.contains("master"));
+        assert!(p.contains("develop"));
+        // A custom base is protected.
+        assert!(protected_branches("trunk").contains("trunk"));
+    }
 }

@@ -284,6 +284,14 @@ fn safety_check(cfg: &Config, p: &mut Plan) {
     p.head_short = head_short(&p.dir);
     p.inactive_hours = last_commit_age_hours(&p.dir);
     let Some(branch) = &p.branch else {
+        // I2: detached HEAD (common in legacy --tmp/swarm worktrees). Resolve a
+        // remote branch whose tip is HEAD and consult its PR, so a merged/closed
+        // PR still lets `cw cleanup` sweep it. Without this, detached worktrees
+        // were always DIRTY and never removed.
+        if let Some(pr) = detached_head_pr(&p.dir) {
+            p.pr = Some(pr);
+            p.pr_state = pr_state(&p.dir, pr);
+        }
         return;
     };
     let base = effective_base(&p.dir, &cfg.runtime.base_branch);
@@ -500,6 +508,31 @@ fn rooted_pids(dir: &Path) -> Vec<u32> {
 /// Return true if a non-ancestor process has its cwd rooted in `dir`.
 fn has_active_session(dir: &Path) -> bool {
     !rooted_pids(dir).is_empty()
+}
+
+/// For a detached HEAD, find a remote branch (`origin/*`) whose tip is HEAD and
+/// return its PR number, mirroring remove-workspace.sh's detached-HEAD path.
+fn detached_head_pr(dir: &Path) -> Option<u32> {
+    let out = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--points-at=HEAD",
+            "--format=%(refname:short)",
+            "refs/remotes/origin/",
+        ])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .strip_prefix("origin/")?
+        .to_string();
+    crate::git::github::pr_for_branch(dir, &branch)
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
