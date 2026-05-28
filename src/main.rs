@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         Command::Serve(args) => serve::run(args, &mut emitter),
         Command::Open { target } => workspace::command::open(target, &mut emitter),
         Command::Restack(args) => restack::run(args, &mut emitter),
+        Command::Resolve(args) => restack::resolve_cmd(args),
         Command::Remove(args) => workspace::command::remove(args, &mut emitter),
         Command::Cleanup(args) => cleanup::run(args, &mut emitter),
         Command::Triage(args) => triage::run(args),

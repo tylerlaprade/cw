@@ -36,6 +36,10 @@ pub enum Command {
     },
     /// Rebase + auto-resolve conflicts (optional hook + resolver).
     Restack(RestackArgs),
+    /// Run the configured resolver on the given conflicted files.
+    /// Intended for restack hooks that need the user's resolver without
+    /// hardcoding a specific CLI.
+    Resolve(ResolveArgs),
     /// Tear down one or more workspaces.
     #[command(alias = "rm")]
     Remove(RemoveArgs),
@@ -93,6 +97,15 @@ pub struct RestackArgs {
     /// Skip the repo hook script if present.
     #[arg(long)]
     pub no_hook: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ResolveArgs {
+    /// Conflicted files to hand to the configured resolver.
+    pub files: Vec<String>,
+    /// Override the resolver (claude | codex | manual).
+    #[arg(long)]
+    pub resolver: Option<String>,
 }
 
 #[derive(Args, Debug)]

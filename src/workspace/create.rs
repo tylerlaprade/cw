@@ -665,6 +665,7 @@ mod tests {
             runtime: Runtime {
                 repo_root: Some(root.clone()),
                 config_path: None,
+                config_root: Some(root.clone()),
                 stem: stem.clone(),
                 base_branch: "develop".into(),
             },
@@ -746,6 +747,7 @@ mod tests {
             runtime: Runtime {
                 repo_root: Some(root.to_path_buf()),
                 config_path: None,
+                config_root: Some(root.to_path_buf()),
                 stem: stem.into(),
                 base_branch: "develop".into(),
             },
