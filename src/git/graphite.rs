@@ -52,7 +52,10 @@ pub fn find_stack_worktree(inside: &Path, target: &str, base: &str) -> Option<St
             if sb == base || sb.is_empty() {
                 continue;
             }
-            if let Some(w) = worktrees.iter().find(|w| w.branch_name() == Some(sb.as_str())) {
+            if let Some(w) = worktrees
+                .iter()
+                .find(|w| w.branch_name() == Some(sb.as_str()))
+            {
                 return Some(StackHit {
                     dir: w.dir.clone(),
                     branch: sb.clone(),
@@ -189,7 +192,10 @@ mod tests {
         git(&repo, &["checkout", "develop"]);
 
         let wt_a = tmp.path().join("repo_1");
-        git(&repo, &["worktree", "add", wt_a.to_str().unwrap(), "feat-a"]);
+        git(
+            &repo,
+            &["worktree", "add", wt_a.to_str().unwrap(), "feat-a"],
+        );
 
         let hit = find_stack_worktree(&repo, "feat-b", "develop").expect("stack sibling found");
         assert_eq!(hit.branch, "feat-a");

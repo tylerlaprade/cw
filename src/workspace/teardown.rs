@@ -65,7 +65,12 @@ pub enum Verdict {
     Dirty(String),
 }
 
-pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Emitter) -> Result<()> {
+pub fn run(
+    cfg: &Config,
+    targets: &[String],
+    opts: &RemoveOpts,
+    emitter: &mut Emitter,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let targets = if targets.is_empty() {
         match paths::detect_number(&cwd, &cfg.runtime.stem) {
@@ -191,12 +196,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
         // Remove worktree. Critical: if we're in cwd, git worktree commands
         // would fail after the dir is gone — cd to / first.
         if let Err(e) = remove_workspace_dir(cfg, p, delete_branch) {
-            eprintln!(
-                "{} #{} removal failed: {:#}",
-                "✗".red(),
-                p.number,
-                e
-            );
+            eprintln!("{} #{} removal failed: {:#}", "✗".red(), p.number, e);
             continue;
         }
         println!("{} #{} removed", "✓".green(), p.number);
@@ -365,8 +365,7 @@ fn head_short(dir: &Path) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
 fn last_commit_age_hours(dir: &Path) -> Option<u64> {
@@ -548,9 +547,7 @@ fn drop_databases(names: &[String]) {
 }
 
 fn drop_one(name: &str) {
-    let st = Command::new("dropdb")
-        .args(["--if-exists", name])
-        .status();
+    let st = Command::new("dropdb").args(["--if-exists", name]).status();
     match st {
         Ok(s) if s.success() => println!("{} dropdb {}", "·".dimmed(), name),
         _ => {}
@@ -564,10 +561,7 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
     let current_dir = if p.dir.is_dir() {
         p.dir.as_path()
     } else {
-        cfg.runtime
-            .repo_root
-            .as_deref()
-            .unwrap_or(p.dir.as_path())
+        cfg.runtime.repo_root.as_deref().unwrap_or(p.dir.as_path())
     };
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
@@ -646,7 +640,10 @@ mod tests {
     #[test]
     fn merged_pr_is_clean_and_branch_deletable() {
         let p = plan(Some(5), Some(PrState::Merged), false);
-        assert!(matches!(verdict(&p, &RemoveOpts::default()), Verdict::Clean(_)));
+        assert!(matches!(
+            verdict(&p, &RemoveOpts::default()),
+            Verdict::Clean(_)
+        ));
         assert!(branch_is_safe_to_delete(&p));
     }
 

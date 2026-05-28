@@ -21,7 +21,11 @@ pub fn show(
 
     // Print the last N lines of each log.
     for ctx in &contexts {
-        println!("=== {} ({}) ===", ctx.display_name(), ctx.log_file.display());
+        println!(
+            "=== {} ({}) ===",
+            ctx.display_name(),
+            ctx.log_file.display()
+        );
         print_tail(&ctx.log_file, n)?;
     }
 
@@ -64,8 +68,10 @@ fn follow_all(contexts: &[Ctx]) -> Result<()> {
     }
 
     let mut buf = [0u8; 4096];
-    let mut leftover: Vec<(String, Vec<u8>)> =
-        files.iter().map(|(n, _, _)| (n.clone(), Vec::new())).collect();
+    let mut leftover: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .map(|(n, _, _)| (n.clone(), Vec::new()))
+        .collect();
     loop {
         for ((name, f_opt, off), (_, pending)) in files.iter_mut().zip(leftover.iter_mut()) {
             // Re-open if file wasn't present at start.
@@ -98,4 +104,3 @@ fn follow_all(contexts: &[Ctx]) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
-

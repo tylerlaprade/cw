@@ -72,7 +72,10 @@ pub fn install_legacy_scripts(worktree: &Path) {
         "#!/usr/bin/env bash\nexit 0\n",
     );
     make_executable(&worktree.join("serve.sh"), "#!/usr/bin/env bash\nexit 0\n");
-    make_executable(&worktree.join("restack.sh"), "#!/usr/bin/env bash\nexit 0\n");
+    make_executable(
+        &worktree.join("restack.sh"),
+        "#!/usr/bin/env bash\nexit 0\n",
+    );
 }
 
 pub fn add_worktree(repo: &Path, ws: &Path, branch: &str, runner: Runner) {

@@ -90,7 +90,12 @@ mod route_tests {
     #[test]
     fn leading_flags_route_to_dispatcher() {
         // The bug: clap rejected leading flags. They must reach the dispatcher.
-        for case in [&["-s", "fix bug"][..], &["--stack", "x"], &["--pr", "7"], &["--continue"]] {
+        for case in [
+            &["-s", "fix bug"][..],
+            &["--stack", "x"],
+            &["--pr", "7"],
+            &["--continue"],
+        ] {
             assert!(
                 dispatcher_args(&argv(case)).is_some(),
                 "{case:?} should route to the dispatcher"

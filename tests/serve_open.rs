@@ -56,7 +56,9 @@ fn serve_open_waits_for_frontend_port() {
     let stem = "openwait";
     let number: u16 = 7;
     let port = pick_port();
-    let base = port.checked_sub(number).expect("pick_port returned < number");
+    let base = port
+        .checked_sub(number)
+        .expect("pick_port returned < number");
 
     let repo = root.join(stem);
     fs::create_dir(&repo).unwrap();

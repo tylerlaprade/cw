@@ -224,12 +224,7 @@ exit 0
     );
 
     let path = format!("{}:/usr/bin:/bin", mock_bin.display());
-    let out = run_cw(
-        &repo,
-        &path,
-        &[("CW_WRAPPER", "1")],
-        &["restack", "8641"],
-    );
+    let out = run_cw(&repo, &path, &[("CW_WRAPPER", "1")], &["restack", "8641"]);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);

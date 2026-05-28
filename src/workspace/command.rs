@@ -201,18 +201,15 @@ pub fn open(target: Option<String>, emitter: &mut Emitter) -> Result<()> {
     }
     if emitter.enabled() {
         // Under the wrapper: it cd's into the workspace, then runs this.
-        let argv = vec![
-            "cw".into(),
-            "serve".into(),
-            "start".into(),
-            "--open".into(),
-        ];
+        let argv = vec!["cw".into(), "serve".into(), "start".into(), "--open".into()];
         emitter.emit(Record::Exec(&argv));
     } else {
         // G6: no wrapper, so the CD record above does nothing and the EXEC
         // record would be printed and ignored — `cw open` was a silent no-op.
         // Start services + open the browser directly for the resolved workspace.
-        eprintln!("note: not running under the cw shell wrapper — starting services in place (no cd)");
+        eprintln!(
+            "note: not running under the cw shell wrapper — starting services in place (no cd)"
+        );
         let serve_target = r.number.map(|n| n.to_string()).or(target);
         crate::serve::run(
             ServeArgs {
@@ -439,7 +436,10 @@ fn enter_workspace(
                 base = cfg.runtime.base_branch
             )
         };
-        let cmd = format!("cd {} && {{ {inner}; }}", shell_quote(&r.dir.to_string_lossy()));
+        let cmd = format!(
+            "cd {} && {{ {inner}; }}",
+            shell_quote(&r.dir.to_string_lossy())
+        );
         emitter.emit(Record::ExecBg(&["bash".into(), "-c".into(), cmd]));
     }
 
@@ -641,7 +641,11 @@ mod launch_tests {
         );
         assert_eq!(
             argv,
-            Some(vec!["claude".into(), "--continue".into(), "keep going".into()])
+            Some(vec![
+                "claude".into(),
+                "--continue".into(),
+                "keep going".into()
+            ])
         );
     }
 
@@ -668,8 +672,11 @@ mod launch_tests {
 
     #[test]
     fn reentry_no_prompt_no_pr_launches_nothing() {
-        let argv =
-            compose_editor_launch(&resolved(Some("feat"), None), &flags(None, None, false), false);
+        let argv = compose_editor_launch(
+            &resolved(Some("feat"), None),
+            &flags(None, None, false),
+            false,
+        );
         assert_eq!(argv, None);
     }
 

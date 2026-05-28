@@ -86,7 +86,9 @@ fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
     if n == 0 {
         let dir = worktree::main_worktree(root).unwrap_or_else(|| root.to_path_buf());
         let branch = current_branch(&dir);
-        let pr = branch.as_deref().and_then(|b| github::pr_for_branch(&dir, b));
+        let pr = branch
+            .as_deref()
+            .and_then(|b| github::pr_for_branch(&dir, b));
         return Some(Resolved {
             number: Some(0),
             dir,
@@ -100,7 +102,9 @@ fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
         return None;
     }
     let branch = current_branch(&dir);
-    let pr = branch.as_deref().and_then(|b| github::pr_for_branch(&dir, b));
+    let pr = branch
+        .as_deref()
+        .and_then(|b| github::pr_for_branch(&dir, b));
     Some(Resolved {
         // 0 when `{stem}_{n}` IS the main worktree, so teardown's workspace-0
         // guard refuses to delete the main repo; otherwise the requested n.
@@ -117,8 +121,7 @@ fn resolve_pr(cfg: &Config, num: u32) -> Result<Resolved> {
         .repo_root
         .as_deref()
         .context("no repo root discovered")?;
-    let pr = github::view_pr(inside, num)
-        .with_context(|| format!("resolving PR #{num} via gh"))?;
+    let pr = github::view_pr(inside, num).with_context(|| format!("resolving PR #{num} via gh"))?;
     let mut r = resolve_branch(cfg, &pr.head_branch)?;
     r.pr = Some(num);
     Ok(r)

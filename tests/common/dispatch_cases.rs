@@ -1,6 +1,5 @@
 use crate::support::{
-    add_worktree, combined_output, commit_file, init_repo, install_legacy_scripts, run_cw,
-    Runner,
+    add_worktree, combined_output, commit_file, init_repo, install_legacy_scripts, run_cw, Runner,
 };
 use std::fs;
 use tempfile::TempDir;

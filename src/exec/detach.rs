@@ -111,7 +111,11 @@ mod tests {
         wait_for_sentinel(&log);
         let captured = std::fs::read_to_string(&out).expect("env.out");
         std::env::remove_var("UV_WORKING_DIR");
-        assert_eq!(captured.trim(), "UV=<unset>", "child still saw UV_WORKING_DIR");
+        assert_eq!(
+            captured.trim(),
+            "UV=<unset>",
+            "child still saw UV_WORKING_DIR"
+        );
     }
 
     /// Red-green guard: the detached shell must not be a login shell. Login
@@ -132,11 +136,7 @@ mod tests {
             "export FROM_PROFILE=leaked\n",
         )
         .unwrap();
-        std::fs::write(
-            fake_home.join(".bashrc"),
-            "export FROM_PROFILE=leaked\n",
-        )
-        .unwrap();
+        std::fs::write(fake_home.join(".bashrc"), "export FROM_PROFILE=leaked\n").unwrap();
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &fake_home);
 

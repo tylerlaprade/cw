@@ -22,7 +22,11 @@ fn remove_zero_refuses() {
     add_worktree(&repo, &ws, "br-3", Runner::Rust);
 
     let out = run_cw(Runner::Rust, &repo, "/usr/bin:/bin", &[], &["remove", "0"]);
-    assert!(!out.status.success(), "expected failure: {}", combined_output(&out));
+    assert!(
+        !out.status.success(),
+        "expected failure: {}",
+        combined_output(&out)
+    );
 
     let msg = combined_output(&out);
     assert!(
@@ -32,5 +36,8 @@ fn remove_zero_refuses() {
 
     // Repo root must still exist — the whole point of the refusal.
     assert!(repo.is_dir(), "repo root was removed");
-    assert!(fs::read_dir(&repo).unwrap().next().is_some(), "repo root emptied");
+    assert!(
+        fs::read_dir(&repo).unwrap().next().is_some(),
+        "repo root emptied"
+    );
 }

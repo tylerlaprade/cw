@@ -49,21 +49,27 @@ impl<'a> Ctx<'a> {
         let subdir = svc.subdir.as_deref().unwrap_or(".");
         let cwd = resolved.dir.join(subdir);
         let pid_file = PathBuf::from(expand_template(
-            svc.pid_file.as_deref().unwrap_or("/tmp/{stem}_{n}_{svc}.pid"),
+            svc.pid_file
+                .as_deref()
+                .unwrap_or("/tmp/{stem}_{n}_{svc}.pid"),
             &stem,
             number,
             port,
             &[("svc", &svc.name)],
         ));
         let log_file = PathBuf::from(expand_template(
-            svc.log_file.as_deref().unwrap_or("/tmp/{stem}_{n}_{svc}.log"),
+            svc.log_file
+                .as_deref()
+                .unwrap_or("/tmp/{stem}_{n}_{svc}.log"),
             &stem,
             number,
             port,
             &[("svc", &svc.name)],
         ));
         let start_cmd = expand_template(
-            svc.start.as_deref().context("service has no start command")?,
+            svc.start
+                .as_deref()
+                .context("service has no start command")?,
             &stem,
             number,
             port,
@@ -119,8 +125,13 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
     // Fire the pre_start shell snippet if present (best-effort).
     if let Some(snippet) = &ctx.svc.pre_start {
         let ai_mode = if no_ai { "false" } else { "true" };
-        let snippet =
-            expand_template(snippet, &ctx.stem, ctx.number, ctx.port, &[("ai_mode", ai_mode)]);
+        let snippet = expand_template(
+            snippet,
+            &ctx.stem,
+            ctx.number,
+            ctx.port,
+            &[("ai_mode", ai_mode)],
+        );
         let st = Command::new("bash")
             .arg("-c")
             .arg(&snippet)
@@ -138,7 +149,10 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
     if let Some(venv) = &ctx.svc.venv {
         let venv_path = ctx.cwd.join(venv);
         if venv_path.is_file() {
-            shell_cmd.push_str(&format!("source {} && ", shell_quote(&venv_path.display().to_string())));
+            shell_cmd.push_str(&format!(
+                "source {} && ",
+                shell_quote(&venv_path.display().to_string())
+            ));
         }
     }
     shell_cmd.push_str("exec ");
@@ -245,7 +259,9 @@ fn wait_for_exit(pid: u32, tries: u32, pause_ms: u64) -> bool {
 }
 
 fn shell_quote(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@=,:".contains(c)) {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+@=,:".contains(c))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))

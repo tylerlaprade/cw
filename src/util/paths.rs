@@ -8,11 +8,7 @@ use regex::Regex;
 pub fn detect_number(path: &std::path::Path, stem: &str) -> Option<u32> {
     let re = Regex::new(&format!(r"(?:^|/){}_(\d+)(?:/|$)", regex::escape(stem))).ok()?;
     let s = path.to_string_lossy();
-    re.captures(&s)?
-        .get(1)?
-        .as_str()
-        .parse::<u32>()
-        .ok()
+    re.captures(&s)?.get(1)?.as_str().parse::<u32>().ok()
 }
 
 #[cfg(test)]
@@ -22,7 +18,10 @@ mod tests {
 
     #[test]
     fn detects_trailing_n() {
-        assert_eq!(detect_number(Path::new("/home/t/Code/app_3"), "app"), Some(3));
+        assert_eq!(
+            detect_number(Path::new("/home/t/Code/app_3"), "app"),
+            Some(3)
+        );
     }
 
     #[test]

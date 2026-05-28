@@ -29,9 +29,7 @@ pub enum Command {
     /// Start/stop/status/logs for configured services in a workspace.
     Serve(ServeArgs),
     /// Start services + open the project in the browser.
-    Open {
-        target: Option<String>,
-    },
+    Open { target: Option<String> },
     /// Rebase + auto-resolve conflicts (optional hook + resolver).
     Restack(RestackArgs),
     /// Run the configured resolver on the given conflicted files.

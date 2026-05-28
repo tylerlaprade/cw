@@ -53,12 +53,17 @@ fn validate() -> Result<()> {
 
     if let Some(r) = &cfg.restack.resolver {
         if !["claude", "codex", "manual"].contains(&r.as_str()) {
-            issues.push(format!("[restack] resolver {r:?} is not one of claude|codex|manual"));
+            issues.push(format!(
+                "[restack] resolver {r:?} is not one of claude|codex|manual"
+            ));
         }
     }
     if let Some(db) = &cfg.databases {
         if !["postgres", "none"].contains(&db.clone.as_str()) {
-            issues.push(format!("[databases] clone {:?} is not postgres|none", db.clone));
+            issues.push(format!(
+                "[databases] clone {:?} is not postgres|none",
+                db.clone
+            ));
         }
         if db.clone == "postgres" && !db.pattern.contains("{n}") {
             issues.push(format!(
@@ -70,7 +75,10 @@ fn validate() -> Result<()> {
     for rule in &cfg.env.strip {
         for p in &rule.patterns {
             if let Err(e) = regex::Regex::new(p) {
-                issues.push(format!("[[env.strip]] file {:?}: invalid regex {p:?}: {e}", rule.file));
+                issues.push(format!(
+                    "[[env.strip]] file {:?}: invalid regex {p:?}: {e}",
+                    rule.file
+                ));
             }
         }
     }
@@ -95,5 +103,6 @@ fn validate() -> Result<()> {
 }
 
 fn opt_path(p: Option<&std::path::Path>) -> String {
-    p.map(|x| x.display().to_string()).unwrap_or_else(|| "<none>".into())
+    p.map(|x| x.display().to_string())
+        .unwrap_or_else(|| "<none>".into())
 }

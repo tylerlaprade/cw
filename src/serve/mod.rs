@@ -56,7 +56,11 @@ fn select_services<'a>(
             if matched.is_empty() {
                 anyhow::bail!(
                     "no service matching {name:?}; known: {}",
-                    cfg.services.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ")
+                    cfg.services
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
             Ok(matched)
@@ -189,7 +193,13 @@ fn status(
             processes::Status::Stopped => format!("{}", "stopped".dimmed()),
             processes::Status::StalePid(pid) => format!("{} pid={pid}", "stale".yellow()),
         };
-        println!("{:12} port={} pid_file={} {}", ctx.display_name(), ctx.port, ctx.pid_file.display(), label);
+        println!(
+            "{:12} port={} pid_file={} {}",
+            ctx.display_name(),
+            ctx.port,
+            ctx.pid_file.display(),
+            label
+        );
     }
     Ok(())
 }

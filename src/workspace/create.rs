@@ -30,7 +30,10 @@ pub struct LockGuard {
 
 impl LockGuard {
     fn new(path: PathBuf) -> Self {
-        Self { path, released: false }
+        Self {
+            path,
+            released: false,
+        }
     }
 
     pub fn release(mut self) {
@@ -73,9 +76,9 @@ pub struct CreateResult {
 /// otherwise slugify.
 pub fn branch_for_subject(subject: &str) -> String {
     let looks_like_ref = subject.len() <= 100
-        && subject.chars().all(|c| {
-            c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.'
-        });
+        && subject
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.');
     if looks_like_ref && !subject.is_empty() {
         subject.to_string()
     } else {
@@ -120,10 +123,7 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     strip_envs(&dir, cfg, number)?;
     inject_envs(&dir, cfg, number)?;
 
-    let setup_log = PathBuf::from(format!(
-        "/tmp/{}_{}_setup.log",
-        cfg.runtime.stem, number
-    ));
+    let setup_log = PathBuf::from(format!("/tmp/{}_{}_setup.log", cfg.runtime.stem, number));
     let _ = std::fs::write(
         &setup_log,
         format!("# cw setup log for {} #{}\n", branch, number),
@@ -275,7 +275,10 @@ fn collect_live_lock_numbers(tmp_dir: &Path, stem: &str, out: &mut BTreeSet<u32>
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some(num_str) = name.strip_prefix(&prefix).and_then(|s| s.strip_suffix(suffix)) else {
+        let Some(num_str) = name
+            .strip_prefix(&prefix)
+            .and_then(|s| s.strip_suffix(suffix))
+        else {
             continue;
         };
         let Ok(n) = num_str.parse::<u32>() else {
@@ -631,16 +634,15 @@ pub(crate) fn autodetect_dep_installs(root: &Path) -> Vec<String> {
     // Scan the repo root itself (single-package layout) plus every top-level
     // subdir (monorepo). Without the root, a single-package repo got no
     // background dependency install on workspace creation.
-    let candidates =
-        std::iter::once((root.to_path_buf(), ".".to_string())).chain(top_level_dirs(root).into_iter().map(
-            |d| {
-                let name = d
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| ".".into());
-                (d, name)
-            },
-        ));
+    let candidates = std::iter::once((root.to_path_buf(), ".".to_string())).chain(
+        top_level_dirs(root).into_iter().map(|d| {
+            let name = d
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into());
+            (d, name)
+        }),
+    );
     for (entry, dirname) in candidates {
         if entry.join("pyproject.toml").is_file() && entry.join("uv.lock").is_file() {
             out.push(format!("( cd {} && uv sync )", shell_quote(&dirname)));
@@ -727,8 +729,8 @@ mod tests {
         fs::create_dir_all(&mock_bin).unwrap();
 
         let original_path = std::env::var_os("PATH");
-        let mut new_path = std::env::split_paths(&original_path.clone().unwrap_or_default())
-            .collect::<Vec<_>>();
+        let mut new_path =
+            std::env::split_paths(&original_path.clone().unwrap_or_default()).collect::<Vec<_>>();
         new_path.insert(0, mock_bin.clone());
         std::env::set_var("PATH", std::env::join_paths(new_path).unwrap());
 
@@ -822,7 +824,11 @@ mod tests {
     }
 
     fn git<const N: usize>(root: &Path, args: [&str; N]) {
-        let status = Command::new("git").args(args).current_dir(root).status().unwrap();
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
         assert!(status.success(), "git {:?} failed", args);
     }
 
@@ -874,8 +880,8 @@ mod tests {
             .checked_sub(age)
             .expect("age within SystemTime range");
         let times = FileTimes::new().set_accessed(target).set_modified(target);
-        let f = std::fs::File::open(path)
-            .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        let f =
+            std::fs::File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
         f.set_times(times)
             .unwrap_or_else(|e| panic!("set_times {}: {e}", path.display()));
     }
@@ -932,7 +938,14 @@ mod tests {
         let (_temp, parent, tmp, root) = sandbox("cwtest");
         let elsewhere = parent.join("cwtest_2");
         let status = Command::new("git")
-            .args(["worktree", "add", "-b", "claimed", elsewhere.to_str().unwrap(), "develop"])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "claimed",
+                elsewhere.to_str().unwrap(),
+                "develop",
+            ])
             .current_dir(&root)
             .status()
             .unwrap();
@@ -954,7 +967,10 @@ mod tests {
         }
         let cfg = test_cfg(&root, "cwtest", 3);
         let err = claim_number(&cfg, &parent, &tmp).unwrap_err();
-        assert!(err.to_string().contains("no free workspace number"), "{err}");
+        assert!(
+            err.to_string().contains("no free workspace number"),
+            "{err}"
+        );
     }
 
     /// Regression: the pre-fix `claim_number` created a `mkdir` lock under

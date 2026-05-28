@@ -14,8 +14,8 @@ pub fn load(cwd: &Path) -> Result<Config> {
             Some(p) => {
                 let text = std::fs::read_to_string(&p)
                     .with_context(|| format!("reading {}", p.display()))?;
-                let cfg: Config = toml::from_str(&text)
-                    .with_context(|| format!("parsing {}", p.display()))?;
+                let cfg: Config =
+                    toml::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
                 (Some(p), cfg)
             }
             None => (None, Config::default()),
@@ -259,7 +259,9 @@ fn autodetect_stem(cfg: &Config, root: Option<&Path>) -> String {
         return s.clone();
     }
     // Prefer the main worktree's basename so we work from inside a worktree.
-    let main = root.and_then(main_worktree).or_else(|| root.map(PathBuf::from));
+    let main = root
+        .and_then(main_worktree)
+        .or_else(|| root.map(PathBuf::from));
     let base = main
         .as_deref()
         .and_then(|r| r.file_name())

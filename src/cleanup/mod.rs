@@ -122,7 +122,12 @@ fn prune_branches(root: &Path, base: &str) {
     let merged_ref = remote_or_local_base(root, base);
     let merged = list_branches(
         root,
-        &["branch", "--merged", &merged_ref, "--format=%(refname:short)"],
+        &[
+            "branch",
+            "--merged",
+            &merged_ref,
+            "--format=%(refname:short)",
+        ],
     );
     let gone = gone_upstream_branches(root);
 
@@ -141,7 +146,11 @@ fn prune_branches(root: &Path, base: &str) {
     if to_delete.is_empty() {
         return;
     }
-    println!("{} deleting {} stale branch(es)", "·".dimmed(), to_delete.len());
+    println!(
+        "{} deleting {} stale branch(es)",
+        "·".dimmed(),
+        to_delete.len()
+    );
     for b in &to_delete {
         let _ = Command::new("git")
             .args(["branch", "-D", b])
@@ -313,7 +322,9 @@ fn gone_upstream_branches(root: &Path) -> Vec<String> {
 
 fn find_key(haystack: &str, from: usize, key: &str) -> Option<usize> {
     let quoted = format!("\"{}\"", key);
-    haystack[from..].find(&quoted).map(|i| from + i + quoted.len())
+    haystack[from..]
+        .find(&quoted)
+        .map(|i| from + i + quoted.len())
 }
 
 /// Find the next JSON string after the given byte offset and return

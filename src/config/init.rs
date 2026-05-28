@@ -140,7 +140,9 @@ pub fn run() -> Result<()> {
     text.push_str(HEADER);
     text.push('\n');
     if !overrides.is_empty() {
-        text.push_str("# --- active overrides ---------------------------------------------------\n\n");
+        text.push_str(
+            "# --- active overrides ---------------------------------------------------\n\n",
+        );
         text.push_str(&overrides.join("\n"));
         text.push('\n');
     }
@@ -172,8 +174,7 @@ mod tests {
         assert_eq!(toml_str(r#"a"b"#), r#""a\"b""#);
         assert_eq!(toml_str(r"a\b"), r#""a\\b""#);
         // The escaped output must round-trip through the TOML parser.
-        let v: toml::Value =
-            toml::from_str(&format!("k = {}", toml_str(r#"weird"\val"#))).unwrap();
+        let v: toml::Value = toml::from_str(&format!("k = {}", toml_str(r#"weird"\val"#))).unwrap();
         assert_eq!(v["k"].as_str().unwrap(), r#"weird"\val"#);
     }
 }

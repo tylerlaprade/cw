@@ -144,7 +144,11 @@ fn has_unique_commits(dir: &Path, branch: &str, base: &str) -> bool {
         .output();
     match out {
         Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().unwrap_or(0) > 0
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .unwrap_or(0)
+                > 0
         }
         _ => true, // conservative: don't flag as "no unique" on error
     }

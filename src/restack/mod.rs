@@ -37,11 +37,7 @@ pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
 /// Resolve the restack target, falling back to workspace creation when the
 /// target is an open PR (or branch) that has no worktree yet. Mirrors Bash
 /// `_cw_find_or_create_workspace` in `cw.sh` for the restack path.
-fn resolve_or_create(
-    cfg: &Config,
-    cwd: &Path,
-    target: Option<&str>,
-) -> Result<resolve::Resolved> {
+fn resolve_or_create(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<resolve::Resolved> {
     let err = match resolve::resolve(cfg, cwd, target) {
         Ok(r) => return Ok(r),
         Err(e) => e,
@@ -577,13 +573,15 @@ mod tests {
 
     #[test]
     fn parses_worktree_conflict_from_gt_stderr() {
-        let stderr =
-            "fatal: 'feat/foo' is already used by worktree at '/Users/me/code/app_3'\n";
+        let stderr = "fatal: 'feat/foo' is already used by worktree at '/Users/me/code/app_3'\n";
         assert_eq!(
             parse_worktree_conflict(stderr),
             Some(("feat/foo".to_string(), "/Users/me/code/app_3".to_string()))
         );
-        assert_eq!(parse_worktree_conflict("fatal: not a git repository\n"), None);
+        assert_eq!(
+            parse_worktree_conflict("fatal: not a git repository\n"),
+            None
+        );
     }
     use crate::config::schema::Config;
     use std::fs;
