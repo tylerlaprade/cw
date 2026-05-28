@@ -128,7 +128,9 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         &setup_log,
         format!("# cw setup log for {} #{}\n", branch, number),
     );
-    kick_off_setup(&dir, cfg, &setup_log)?;
+    // The DB-clone source is the workspace cw is run from (0 = main repo).
+    let src_number = crate::util::paths::detect_number(cwd, &cfg.runtime.stem).unwrap_or(0);
+    kick_off_setup(&dir, cfg, &setup_log, number, existed, src_number)?;
     println!(
         "Dependencies + database clone running in background (log: {})",
         setup_log.display()
@@ -387,7 +389,11 @@ fn copy_envs(src: &Path, dst: &Path, cfg: &Config) -> Result<()> {
         }
         let to = dst.join(&rel);
         if let Some(p) = to.parent() {
-            std::fs::create_dir_all(p).ok();
+            // H8: propagate the mkdir error instead of .ok() — otherwise the
+            // copy below fails with a less informative error (or silently leaves
+            // a half-populated workspace).
+            std::fs::create_dir_all(p)
+                .with_context(|| format!("creating env dir {}", p.display()))?;
         }
         std::fs::copy(&from, &to)
             .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
@@ -455,12 +461,24 @@ fn apply_strip(path: &Path, patterns: &[String]) -> Result<()> {
 }
 
 fn inject_envs(dst: &Path, cfg: &Config, number: u32) -> Result<()> {
+    // H6: {port} is documented in the schema + init scaffold but was never
+    // substituted. Resolve it to the first configured service's port
+    // (base + number) — the common single-service case. Multi-service repos
+    // that need a specific port should reference it via that service's config.
+    let port = cfg
+        .services
+        .iter()
+        .find_map(|s| s.port.as_ref())
+        .map(|p| u32::from(p.base) + number);
     for rule in &cfg.env.inject {
         let path = dst.join(&rule.file);
-        let line = rule
+        let mut line = rule
             .line
             .replace("{n}", &number.to_string())
             .replace("{stem}", &cfg.runtime.stem);
+        if let Some(port) = port {
+            line = line.replace("{port}", &port.to_string());
+        }
         let mut text = std::fs::read_to_string(&path).unwrap_or_default();
         if !text.ends_with('\n') && !text.is_empty() {
             text.push('\n');
@@ -492,32 +510,66 @@ fn relevant_envs(dst: &Path) -> Vec<String> {
     autodetect_env_files(dst)
 }
 
-fn kick_off_setup(dir: &Path, cfg: &Config, log: &Path) -> Result<()> {
-    let mut parts = Vec::new();
+fn kick_off_setup(
+    dir: &Path,
+    cfg: &Config,
+    log: &Path,
+    number: u32,
+    existed: bool,
+    src_number: u32,
+) -> Result<()> {
+    // Each phase runs INDEPENDENTLY: a dependency-install failure must not abort
+    // the post_create hook or DB clone (the original used `set +e` for exactly
+    // this — H3). Phases are newline-joined and run under `bash -c` (no set -e).
+    let mut phases: Vec<String> = Vec::new();
+
+    // H2: restack an existing (fetched-from-remote) branch onto its parent,
+    // best-effort — mirrors new-workspace.sh's `try_restack` on EXISTING_BRANCH.
+    if existed && graphite_enabled(cfg) {
+        phases.push(
+            "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
+             || git rebase --abort >/dev/null 2>&1 || true"
+                .into(),
+        );
+    }
+
+    // Dependency installs. Configured [deps] honor `parallel`; autodetected ones
+    // run concurrently (H5 — the original installed Python + JS in parallel).
     if let Some(deps) = &cfg.deps {
-        let joiner = if deps.parallel { " & " } else { " && " };
-        let mut subparts = Vec::new();
-        for i in &deps.install {
-            subparts.push(format!("( cd {} && {} )", shell_quote(&i.dir), i.cmd));
-        }
-        if !subparts.is_empty() {
-            let joined = subparts.join(joiner);
-            let s = if deps.parallel {
-                format!("{{ {joined}; wait; }}")
+        let subs: Vec<String> = deps
+            .install
+            .iter()
+            .map(|i| format!("( cd {} && {} )", shell_quote(&i.dir), i.cmd))
+            .collect();
+        if !subs.is_empty() {
+            phases.push(if deps.parallel {
+                format!("{{ {}; wait; }}", subs.join(" & "))
             } else {
-                joined
-            };
-            parts.push(s);
+                subs.join(" && ")
+            });
         }
     } else {
-        parts.extend(autodetect_dep_installs(dir));
+        let installs = autodetect_dep_installs(dir);
+        if !installs.is_empty() {
+            phases.push(format!("{{ {}; wait; }}", installs.join(" & ")));
+        }
     }
 
+    // H1: clone per-workspace databases — opt-in via [databases] clone = "postgres".
+    if let Some(db) = &cfg.databases {
+        if db.clone == "postgres" {
+            if let Some(snippet) = db_clone_snippet(db, src_number, number) {
+                phases.push(snippet);
+            }
+        }
+    }
+
+    // post_create hook runs regardless of earlier phase outcomes (H3).
     if let Some(hook) = &cfg.hooks.post_create {
-        parts.push(hook.clone());
+        phases.push(hook.clone());
     }
 
-    if parts.is_empty() {
+    if phases.is_empty() {
         // Nothing to do; mark done immediately.
         let _ = std::fs::OpenOptions::new()
             .append(true)
@@ -527,13 +579,54 @@ fn kick_off_setup(dir: &Path, cfg: &Config, log: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let chain = parts.join(" && ");
+    // Newline-join so a failing phase doesn't abort the rest (no `&&` between
+    // phases). Within a phase, `&&`/`&` semantics are preserved.
+    let chain = phases.join("\n");
     // Strip UV_WORKING_DIR inherited from the caller's direnv context: if the
-    // caller ran `cw` from inside another workspace's hanaq subdir, `uv run
-    // --script` in hook commands would chdir there and resolve `./scripts/…`
-    // against the wrong tree. Mirrors `new-workspace.sh` line 319.
+    // caller ran `cw` from inside another workspace's subdir, `uv run --script`
+    // in a hook would chdir there and resolve `./scripts/…` against the wrong
+    // tree. Mirrors `new-workspace.sh`.
     detach::spawn_shell_detached(&chain, dir, log, "SETUP_DONE", &["UV_WORKING_DIR"])?;
     Ok(())
+}
+
+/// Build a best-effort parallel DB-clone snippet: for each suffix, clone the
+/// source DB (`pattern` filled with `src_number` + `default_source_suffix`) into
+/// the new workspace's DB (`pattern` filled with `dst_number` + that suffix).
+/// `createdb -T` (template copy) with a `pg_dump | psql` fallback. Every clone
+/// is `|| true` so a missing source never fails the whole setup. Returns None
+/// when the pattern has no `{n}` (every workspace would share one DB name).
+fn db_clone_snippet(
+    db: &crate::config::schema::DatabasesCfg,
+    src_number: u32,
+    dst_number: u32,
+) -> Option<String> {
+    if !db.pattern.contains("{n}") || db.suffixes.is_empty() {
+        return None;
+    }
+    let fill = |n: u32, suffix: &str| {
+        db.pattern
+            .replace("{n}", &n.to_string())
+            .replace("{suffix}", suffix)
+    };
+    let clones: Vec<String> = db
+        .suffixes
+        .iter()
+        .map(|suffix| {
+            let src = fill(src_number, &db.default_source_suffix);
+            let dst = fill(dst_number, suffix);
+            // Skip a no-op self-clone (src == dst).
+            if src == dst {
+                return "true".to_string();
+            }
+            format!(
+                "( createdb -T '{src}' '{dst}' 2>/dev/null \
+                 || {{ createdb '{dst}' 2>/dev/null && pg_dump '{src}' 2>/dev/null | psql -q '{dst}' 2>/dev/null; }} \
+                 || true )"
+            )
+        })
+        .collect();
+    Some(format!("{{ {}; wait; }}", clones.join(" & ")))
 }
 
 fn autodetect_dep_installs(root: &Path) -> Vec<String> {
@@ -902,5 +995,29 @@ mod tests {
             assert!(path.is_dir());
         }
         assert!(!path.exists());
+    }
+
+    fn db_cfg(pattern: &str) -> crate::config::schema::DatabasesCfg {
+        crate::config::schema::DatabasesCfg {
+            pattern: pattern.into(),
+            suffixes: vec!["qa".into(), "stg".into()],
+            clone: "postgres".into(),
+            default_source_suffix: "qa".into(),
+        }
+    }
+
+    #[test]
+    fn db_clone_snippet_clones_each_suffix_from_source() {
+        let s = db_clone_snippet(&db_cfg("app_{n}_{suffix}"), 0, 3).unwrap();
+        // qa + stg both cloned from the source's qa DB into workspace 3's DBs.
+        assert!(s.contains("createdb -T 'app_0_qa' 'app_3_qa'"), "{s}");
+        assert!(s.contains("'app_3_stg'"), "{s}");
+        assert!(s.contains("pg_dump 'app_0_qa'"), "{s}");
+    }
+
+    #[test]
+    fn db_clone_snippet_none_when_pattern_lacks_n() {
+        // No {n} → every workspace would share one DB name; refuse to clone.
+        assert!(db_clone_snippet(&db_cfg("app_{suffix}"), 0, 3).is_none());
     }
 }
