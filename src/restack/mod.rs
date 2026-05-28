@@ -208,8 +208,10 @@ fn emit_shell_state(emitter: &mut Emitter, cwd: &Path, r: &resolve::Resolved) {
     let cd = r.dir.to_string_lossy().to_string();
     emitter.emit(Record::Cd(&cd));
     if let Some(n) = r.number {
-        let title = format!("#{n}");
-        emitter.emit(Record::Title(&title));
+        if n != 0 {
+            let title = format!("#{n}");
+            emitter.emit(Record::Title(&title));
+        }
     }
 }
 

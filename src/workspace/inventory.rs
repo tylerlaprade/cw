@@ -53,10 +53,16 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
     let Some(root) = cfg.runtime.repo_root.as_deref() else {
         return Ok(Vec::new());
     };
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let wts = worktree::list(root)?;
     let mut out = Vec::new();
     for w in wts {
-        let number = paths::detect_number(&w.dir, &cfg.runtime.stem);
+        let canonical_dir = std::fs::canonicalize(&w.dir).unwrap_or_else(|_| w.dir.clone());
+        let number = if canonical_dir == canonical_root {
+            Some(0)
+        } else {
+            paths::detect_number(&w.dir, &cfg.runtime.stem)
+        };
         let branch = w.branch_name().map(|s| s.to_string());
         let mut e = Entry {
             number,

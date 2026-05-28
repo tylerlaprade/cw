@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         Command::Triage(args) => triage::run(args),
         Command::Workspace(args) => workspace::command::dispatch(args, &mut emitter),
         Command::Init => config::init::run(),
+        Command::Completions { shell } => emit_completions(shell),
         Command::Default(rest) => workspace::command::default_dispatch(rest, &mut emitter),
     };
 
@@ -53,6 +54,18 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+fn emit_completions(shell: cli::Shell) -> anyhow::Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::{generate, shells};
+    let mut cmd = cli::Cli::command();
+    match shell {
+        cli::Shell::Zsh => generate(shells::Zsh, &mut cmd, "cw", &mut std::io::stdout()),
+        cli::Shell::Bash => generate(shells::Bash, &mut cmd, "cw", &mut std::io::stdout()),
+        cli::Shell::Fish => generate(shells::Fish, &mut cmd, "cw", &mut std::io::stdout()),
+    }
+    Ok(())
 }
 
 mod doctor {

@@ -14,7 +14,10 @@ function cw
     set -l _close 0
     for _line in $_out
         set -l _parts (string split \t -- $_line)
-        test "$_parts[1]" != "CW"; and continue
+        if test "$_parts[1]" != "CW"
+            echo $_line
+            continue
+        end
         set -l _kind $_parts[2]
         set -l _argv
         for _i in (seq 3 (count $_parts))

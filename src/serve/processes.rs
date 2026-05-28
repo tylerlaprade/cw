@@ -115,7 +115,7 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
         let snippet =
             expand_template(snippet, &ctx.stem, ctx.number, ctx.port, &[("ai_mode", ai_mode)]);
         let st = Command::new("bash")
-            .arg("-lc")
+            .arg("-c")
             .arg(&snippet)
             .current_dir(&ctx.cwd)
             .status();
@@ -145,7 +145,7 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
     let log_stderr = log.try_clone()?;
 
     let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
+    cmd.arg("-c")
         .arg(&shell_cmd)
         .current_dir(&ctx.cwd)
         .stdin(Stdio::null())

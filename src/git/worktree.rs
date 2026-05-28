@@ -43,6 +43,11 @@ pub fn find_for_branch(inside: &Path, branch: &str) -> Result<Option<Worktree>> 
         .find(|w| w.branch_name() == Some(branch)))
 }
 
+/// Return the main worktree path (first entry of `git worktree list --porcelain`).
+pub fn main_worktree(inside: &Path) -> Option<PathBuf> {
+    list(inside).ok()?.into_iter().next().map(|w| w.dir)
+}
+
 fn parse_porcelain(s: &str) -> Vec<Worktree> {
     let mut out = Vec::new();
     let mut cur: Option<Worktree> = None;

@@ -96,6 +96,9 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
             );
             continue;
         };
+        if n == 0 {
+            anyhow::bail!("refuse to remove workspace 0 (repo root)");
+        }
         let databases = database_names_for(cfg, n);
         let plan = build_plan(cfg, n, r, databases, &cwd)?;
         plans.push(plan);
@@ -469,7 +472,7 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
             .unwrap_or_else(|| p.dir.as_path())
     };
     let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
+    cmd.arg("-c")
         .arg(hook)
         .current_dir(current_dir)
         .env("DEVCLI_DIR", &p.dir)
