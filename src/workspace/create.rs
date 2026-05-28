@@ -705,9 +705,14 @@ mod tests {
         assert_eq!(result.branch, "feature/foo");
         assert_eq!(result.dir, temp.path().join(format!("{stem}_1")));
         assert!(result.dir.is_dir());
-        assert_eq!(
-            fs::read_to_string(&gt_log).unwrap().trim(),
-            "track --parent develop"
+        // `contains`, not exact-equality: this test mutates the global PATH to a
+        // fake `gt` whose log is shared, so a concurrently-running test that also
+        // shells out to `gt` may append extra lines. The intent is only that
+        // create() registered the new branch with `gt track --parent <base>`.
+        let gt_calls = fs::read_to_string(&gt_log).unwrap();
+        assert!(
+            gt_calls.contains("track --parent develop"),
+            "expected `gt track --parent develop`, got:\n{gt_calls}"
         );
 
         match original_path {

@@ -77,6 +77,19 @@ fn resolve_or_create(
         (t.to_string(), None)
     };
 
+    // F2: a branch in the same stack may already be checked out in a sibling
+    // worktree — restack the whole stack there rather than creating a duplicate.
+    if let Some(root) = cfg.runtime.repo_root.as_deref() {
+        if let Some(hit) =
+            crate::git::graphite::find_stack_worktree(root, &branch, &cfg.runtime.base_branch)
+        {
+            println!("Stack worktree for {branch} → {}", hit.dir.display());
+            if let Ok(r) = resolve::resolve(cfg, cwd, Some(&hit.branch)) {
+                return Ok(r);
+            }
+        }
+    }
+
     let result = create::create(
         cfg,
         cwd,

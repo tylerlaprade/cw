@@ -109,6 +109,48 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 full_input.clone()
             };
             let _ = head;
+
+            // F2: if a branch in the same stack as the target is already checked
+            // out in a sibling worktree, enter it instead of creating a
+            // duplicate worktree for the stack. (For a brand-new description the
+            // slug branch doesn't exist yet, so this is a no-op there.)
+            let prospective_branch = create::branch_for_subject(&subject);
+            if let Some(root) = cfg.runtime.repo_root.as_deref() {
+                if let Some(hit) = crate::git::graphite::find_stack_worktree(
+                    root,
+                    &prospective_branch,
+                    &cfg.runtime.base_branch,
+                ) {
+                    if let Ok(r) = resolve::resolve(&cfg, &cwd, Some(&hit.branch)) {
+                        emitter.emit(Record::Msg(&format!(
+                            "Stack overlap: {} already in {} (same stack as {})",
+                            hit.branch,
+                            r.dir.display(),
+                            prospective_branch
+                        )));
+                        let launch_prompt = if is_description_create {
+                            Some(full_input)
+                        } else {
+                            flags.prompt.clone()
+                        };
+                        let pr_override = flags
+                            .pr_override
+                            .or(create_from_pr.as_ref().map(|t| t.number));
+                        return enter_workspace(
+                            &cfg,
+                            r,
+                            LaunchFlags {
+                                pr_override,
+                                prompt: launch_prompt,
+                                ..flags
+                            },
+                            emitter,
+                            false,
+                        );
+                    }
+                }
+            }
+
             let r = create::create(
                 &cfg,
                 &cwd,
