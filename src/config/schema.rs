@@ -112,6 +112,10 @@ pub struct RestackCfg {
     pub hook: Option<String>,
     /// "claude" | "codex" | "manual"
     pub resolver: Option<String>,
+    /// Submit the stack (`gt ss`) after a successful restack. Off by default —
+    /// it pushes branches and opens/updates PRs and needs Graphite auth.
+    #[serde(default)]
+    pub submit: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

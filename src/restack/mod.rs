@@ -19,7 +19,14 @@ pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
     let dir = r.dir.clone();
     emit_shell_state(emitter, &cwd, &r);
 
-    let stashed = autostash(&dir)?;
+    // D4: never autostash when a rebase is already in progress — that's the
+    // resume case, where the dirty tree IS the in-flight conflict resolution.
+    // `git stash` there would strip the user's staged resolution.
+    let stashed = if rebase_in_progress(&dir) {
+        false
+    } else {
+        autostash(&dir)?
+    };
     let out = run_loop(&cfg, &dir, &args);
     if stashed {
         restore_stash(&dir);
@@ -88,6 +95,10 @@ fn resolve_or_create(
 }
 
 fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
+    // Detached worktrees are restored when this guard drops — on every exit
+    // path (success, conflict-bail, error), mirroring restack.sh's EXIT trap.
+    let mut detached = DetachedWorktrees::new();
+
     if !rebase_in_progress(dir) {
         // Kick off the rebase.
         if graphite_enabled(cfg) {
@@ -103,15 +114,47 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
                 Ok(_) => {}
             }
 
-            let out = Command::new("gt")
-                .args(["r", "--quiet"])
-                .current_dir(dir)
-                .output()?;
-            if out.status.success() && !rebase_in_progress(dir) {
+            // D1: `gt r` can fail because a branch it needs to move is checked
+            // out in a sibling worktree ("fatal: '<b>' is already used by
+            // worktree at '<p>'") — the norm in the {stem}_{N} layout. Detach
+            // the blocker and retry (bounded), instead of hard-bailing.
+            let mut gt_r_ok = false;
+            let mut last_failure = String::new();
+            for _ in 0..12 {
+                let out = Command::new("gt")
+                    .args(["r", "--quiet"])
+                    .current_dir(dir)
+                    .output()?;
+                if out.status.success() {
+                    gt_r_ok = true;
+                    break;
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if let Some((branch, path)) = parse_worktree_conflict(&stderr) {
+                    println!(
+                        "{} detaching {} in {} to unblock restack",
+                        "→".cyan(),
+                        branch,
+                        path
+                    );
+                    detached.detach(PathBuf::from(&path), branch)?;
+                    continue;
+                }
+                last_failure = command_failure("gt restack failed", &out);
+                break;
+            }
+            if gt_r_ok && !rebase_in_progress(dir) {
                 return finalize(cfg, dir);
             }
-            if !out.status.success() && !rebase_in_progress(dir) {
-                anyhow::bail!("{}", command_failure("gt restack failed", &out));
+            if !gt_r_ok && !rebase_in_progress(dir) {
+                anyhow::bail!(
+                    "{}",
+                    if last_failure.is_empty() {
+                        "gt restack failed".to_string()
+                    } else {
+                        last_failure
+                    }
+                );
             }
         } else {
             println!("{} git rebase {}", "→".cyan(), cfg.runtime.base_branch);
@@ -120,7 +163,13 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
                 .current_dir(dir)
                 .status()?;
             if st.success() {
-                return Ok(());
+                return finalize(cfg, dir);
+            }
+            // D2: a failed `git rebase` that left NO rebase in progress is a
+            // real failure (bad base, precondition), not conflicts to resolve.
+            // Don't fall through — the loop would print "restack complete".
+            if !rebase_in_progress(dir) {
+                anyhow::bail!("git rebase {} failed", cfg.runtime.base_branch);
             }
         }
     }
@@ -182,20 +231,100 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
         }
 
         if !try_continue(cfg, dir)? {
-            // `gt continue` may have failed because the *next* commit conflicts.
-            // Loop around — unresolved_files() will pick up the new set.
+            // D3: `gt continue` / `git rebase --continue` failed. If a rebase is
+            // still in progress, the NEXT commit conflicts — loop to resolve it.
+            // If NOT, the continue genuinely failed; bail rather than fall to the
+            // loop top and report a false "restack complete".
+            if !rebase_in_progress(dir) {
+                anyhow::bail!(
+                    "`{}` failed and left no rebase in progress",
+                    if graphite_enabled(cfg) {
+                        "gt continue"
+                    } else {
+                        "git rebase --continue"
+                    }
+                );
+            }
         }
     }
 }
 
 fn finalize(cfg: &Config, dir: &Path) -> Result<()> {
-    if graphite_enabled(cfg) {
-        // Optional: install deps after a restack — matches existing Condor behavior.
-        // Kept light: no-op for now; users with heavy setups have post_create.
+    // D5: auto-submit is opt-in. The original always ran `gt ss` (submit the
+    // stack) after a restack, but that pushes branches and opens/updates PRs —
+    // opinionated and requires Graphite auth, so a generic user shouldn't get
+    // it by default. Enable with `[restack] submit = true`.
+    if graphite_enabled(cfg) && cfg.restack.submit {
+        let st = Command::new("gt")
+            .args(["ss", "--no-interactive"])
+            .current_dir(dir)
+            .status();
+        if !matches!(st, Ok(s) if s.success()) {
+            eprintln!(
+                "{} stack submit failed — submit manually with `gt ss`",
+                "⚠".yellow()
+            );
+        }
     }
     println!("{} restack complete", "✓".green());
-    let _ = dir;
     Ok(())
+}
+
+/// Worktrees temporarily detached so `gt r` could move their branch. Restored
+/// (re-checkout the branch) when this guard drops — covering every exit path,
+/// like restack.sh's `restore_worktrees` EXIT trap.
+struct DetachedWorktrees(Vec<(PathBuf, String)>);
+
+impl DetachedWorktrees {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn detach(&mut self, path: PathBuf, branch: String) -> Result<()> {
+        let st = Command::new("git")
+            .args(["checkout", "--detach", "--quiet"])
+            .current_dir(&path)
+            .status()
+            .with_context(|| format!("detaching worktree at {}", path.display()))?;
+        if !st.success() {
+            anyhow::bail!("failed to detach {} in {}", branch, path.display());
+        }
+        self.0.push((path, branch));
+        Ok(())
+    }
+}
+
+impl Drop for DetachedWorktrees {
+    fn drop(&mut self) {
+        for (path, branch) in &self.0 {
+            let ok = Command::new("git")
+                .args(["checkout", branch, "--quiet"])
+                .current_dir(path)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                eprintln!(
+                    "{} could not restore {} in {} — run: git -C {} checkout {}",
+                    "⚠".yellow(),
+                    branch,
+                    path.display(),
+                    path.display(),
+                    branch
+                );
+            }
+        }
+    }
+}
+
+/// Parse git's "fatal: '<branch>' is already used by worktree at '<path>'".
+fn parse_worktree_conflict(stderr: &str) -> Option<(String, String)> {
+    let re = regex::Regex::new(r"'([^']+)' is already used by worktree at '([^']+)'").ok()?;
+    let caps = re.captures(stderr)?;
+    Some((
+        caps.get(1)?.as_str().to_string(),
+        caps.get(2)?.as_str().to_string(),
+    ))
 }
 
 // --- helpers --------------------------------------------------------------
@@ -431,7 +560,18 @@ pub fn resolve_cmd(args: ResolveArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{conflict_markers_present, hook_path};
+    use super::{conflict_markers_present, hook_path, parse_worktree_conflict};
+
+    #[test]
+    fn parses_worktree_conflict_from_gt_stderr() {
+        let stderr =
+            "fatal: 'feat/foo' is already used by worktree at '/Users/me/code/app_3'\n";
+        assert_eq!(
+            parse_worktree_conflict(stderr),
+            Some(("feat/foo".to_string(), "/Users/me/code/app_3".to_string()))
+        );
+        assert_eq!(parse_worktree_conflict("fatal: not a git repository\n"), None);
+    }
     use crate::config::schema::Config;
     use std::fs;
 
