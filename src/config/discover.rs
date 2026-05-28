@@ -1,4 +1,4 @@
-use super::schema::{Config, Runtime};
+use super::schema::{Config, PortCfg, Runtime, ServiceCfg};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +28,150 @@ pub fn load(cwd: &Path) -> Result<Config> {
         stem: autodetect_stem(&cfg, repo_root.as_deref()),
         base_branch: autodetect_base_branch(&cfg, repo_root.as_deref()),
     };
+    // Merge autodetected services with any overrides already in cfg.services.
+    autodetect_services(&mut cfg);
     Ok(cfg)
+}
+
+/// Fill `cfg.services` from repo layout when the file didn't specify them.
+/// User-specified services are preserved verbatim; autodetection only adds
+/// defaults for names not already present, and fills in missing fields on
+/// existing entries by name match.
+fn autodetect_services(cfg: &mut Config) {
+    let Some(root) = cfg.runtime.repo_root.clone() else {
+        return;
+    };
+    let detected = detect_services_in(&root);
+    for d in detected {
+        match cfg.services.iter_mut().find(|s| s.name == d.name) {
+            Some(existing) => merge_service(existing, d),
+            None => cfg.services.push(d),
+        }
+    }
+}
+
+fn merge_service(dst: &mut ServiceCfg, src: ServiceCfg) {
+    if dst.subdir.is_none() {
+        dst.subdir = src.subdir;
+    }
+    if dst.port.is_none() {
+        dst.port = src.port;
+    }
+    if dst.start.is_none() {
+        dst.start = src.start;
+    }
+    if dst.venv.is_none() {
+        dst.venv = src.venv;
+    }
+    if dst.pid_file.is_none() {
+        dst.pid_file = src.pid_file;
+    }
+    if dst.log_file.is_none() {
+        dst.log_file = src.log_file;
+    }
+    if dst.stop_patterns.is_empty() {
+        dst.stop_patterns = src.stop_patterns;
+    }
+    if dst.open_url.is_none() {
+        dst.open_url = src.open_url;
+    }
+    if dst.alias.is_empty() {
+        dst.alias = src.alias;
+    }
+}
+
+fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
+    let mut out = Vec::new();
+
+    // Backend: any top-level subdir containing manage.py → Django.
+    for entry in top_level_dirs(root) {
+        if entry.join("manage.py").is_file() {
+            let subdir = entry.file_name().unwrap().to_string_lossy().into_owned();
+            out.push(ServiceCfg {
+                name: "backend".into(),
+                alias: vec!["be".into(), subdir.clone()],
+                subdir: Some(subdir.clone()),
+                port: Some(PortCfg { base: 8000 }),
+                start: Some("python manage.py runserver {port}".into()),
+                start_env: Default::default(),
+                venv: Some(".venv/bin/activate".into()),
+                pid_file: Some("/tmp/{stem}_{n}_backend.pid".into()),
+                log_file: Some("/tmp/{stem}_{n}_backend.log".into()),
+                stop_patterns: vec!["manage.py runserver {port}".into()],
+                pre_start: None,
+                open_url: None,
+            });
+            break; // only one backend
+        }
+    }
+
+    // Frontend: any top-level subdir with package.json that has a "dev"
+    // or "start" script.
+    for entry in top_level_dirs(root) {
+        if has_frontend_package(&entry) {
+            let subdir = entry.file_name().unwrap().to_string_lossy().into_owned();
+            let start = if entry.join("vite.config.ts").is_file()
+                || entry.join("vite.config.js").is_file()
+            {
+                "npm start -- --port {port}"
+            } else {
+                "npm run dev -- --port {port}"
+            };
+            out.push(ServiceCfg {
+                name: "frontend".into(),
+                alias: vec!["fe".into(), subdir.clone()],
+                subdir: Some(subdir.clone()),
+                port: Some(PortCfg { base: 3000 }),
+                start: Some(start.into()),
+                start_env: Default::default(),
+                venv: None,
+                pid_file: Some("/tmp/{stem}_{n}_frontend.pid".into()),
+                log_file: Some("/tmp/{stem}_{n}_frontend.log".into()),
+                stop_patterns: vec![format!("{subdir}/node_modules.*vite")],
+                pre_start: None,
+                open_url: Some("http://localhost:{port}".into()),
+            });
+            break; // only one frontend
+        }
+    }
+
+    out
+}
+
+fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(iter) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    iter.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .map(|n| {
+                        let s = n.to_string_lossy();
+                        !s.starts_with('.') && s != "target" && s != "node_modules"
+                    })
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn has_frontend_package(dir: &Path) -> bool {
+    let pkg = dir.join("package.json");
+    if !pkg.is_file() {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&pkg) else {
+        return false;
+    };
+    // Very light parse: look for "scripts" + ("dev" or "start") keys.
+    // Avoid pulling in serde_json just for this probe.
+    let scripts_idx = text.find("\"scripts\"").unwrap_or(usize::MAX);
+    if scripts_idx == usize::MAX {
+        return false;
+    }
+    let tail = &text[scripts_idx..];
+    tail.contains("\"dev\"") || tail.contains("\"start\"")
 }
 
 fn repo_root(cwd: &Path) -> Option<PathBuf> {
