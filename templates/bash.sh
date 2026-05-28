@@ -5,6 +5,12 @@
 # CW_WRAPPER=1. No eval; argv records exec directly via arrays.
 
 cw() {
+    # Streaming subcommands must NOT be captured in $() — that buffers forever
+    # and shows nothing. Pass them straight through so they stream to the tty.
+    if [[ "$1" == "serve" && ( "$2" == "logs" || "$2" == "tail" ) ]]; then
+        command cw "$@"
+        return $?
+    fi
     local _out _rc _close=0
     _out=$(CW_WRAPPER=1 command cw "$@")
     _rc=$?

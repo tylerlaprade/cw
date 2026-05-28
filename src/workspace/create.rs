@@ -109,8 +109,8 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
     let existed = branch_exists(root, &branch)?;
 
-    println!("Creating workspace {number}...");
-    println!("Creating worktree at {}...", dir.display());
+    eprintln!("Creating workspace {number}...");
+    eprintln!("Creating worktree at {}...", dir.display());
     add_worktree(root, &dir, &branch, &parent_branch, existed)?;
     if !existed && graphite_enabled(cfg) {
         gt_track(&dir, &parent_branch)?;
@@ -131,10 +131,7 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     // The DB-clone source is the workspace cw is run from (0 = main repo).
     let src_number = crate::util::paths::detect_number(cwd, &cfg.runtime.stem).unwrap_or(0);
     kick_off_setup(&dir, cfg, &setup_log, number, existed, src_number)?;
-    println!(
-        "Dependencies + database clone running in background (log: {})",
-        setup_log.display()
-    );
+    eprintln!("Background setup running (log: {})", setup_log.display());
 
     print_ready_banner(cfg, number, &dir, &setup_log);
 
@@ -148,11 +145,11 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
 }
 
 fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
-    println!();
-    println!("========================================");
-    println!("Workspace {number} ready!");
-    println!("========================================");
-    println!("  Directory: {}", dir.display());
+    eprintln!();
+    eprintln!("========================================");
+    eprintln!("Workspace {number} ready!");
+    eprintln!("========================================");
+    eprintln!("  Directory: {}", dir.display());
     for svc in &cfg.services {
         let Some(port_cfg) = &svc.port else {
             continue;
@@ -164,20 +161,20 @@ fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
         if let Some(first) = label.get_mut(0..1) {
             first.make_ascii_uppercase();
         }
-        println!("  {label}: http://localhost:{port}");
+        eprintln!("  {label}: http://localhost:{port}");
     }
     if let Some(db) = &cfg.databases {
         let prefix = db
             .pattern
             .replace("{n}", &number.to_string())
             .replace("{suffix}", &db.default_source_suffix);
-        println!("  Database:  {prefix}");
+        eprintln!("  Database:  {prefix}");
     }
-    println!();
+    eprintln!();
     // Tool-native instruction — `./serve.sh` is the company script and does not
     // exist in a generic repo.
-    println!("Start with: cw open {number}");
-    println!();
+    eprintln!("Start with: cw open {number}");
+    eprintln!();
     eprintln!("⚠ Background setup still running.");
     eprintln!("  Tail progress: tail -f {}", setup_log.display());
     eprintln!("  Wait for SETUP_DONE before starting services.");

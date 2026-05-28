@@ -244,9 +244,11 @@ exit 0
         stdout.contains("Found PR #8641 \u{2192} feat-ws"),
         "stdout missing PR announce: {stdout:?}"
     );
+    // The ready banner is human output → stderr (stdout carries only the
+    // CW wrapper records under CW_WRAPPER=1).
     assert!(
-        stdout.contains("Workspace 1 ready!"),
-        "stdout missing ready banner: {stdout:?}"
+        stderr.contains("Workspace 1 ready!"),
+        "stderr missing ready banner: {stderr:?}"
     );
 }
 

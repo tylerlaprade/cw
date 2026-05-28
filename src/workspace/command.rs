@@ -378,6 +378,26 @@ fn enter_workspace(
     emitter: &mut Emitter,
     first_entry: bool,
 ) -> Result<()> {
+    // K2: allow direnv's .envrc on FIRST entry, before cd'ing in — otherwise
+    // entering the new worktree trips direnv's "blocked" prompt. Foreground
+    // EXEC emitted ahead of the CD record so it runs first.
+    if first_entry {
+        let direnv = cfg
+            .integrations
+            .direnv
+            .unwrap_or_else(|| crate::util::in_path("direnv"));
+        if direnv {
+            let envrc = r.dir.join(".envrc");
+            if envrc.is_file() {
+                emitter.emit(Record::Exec(&[
+                    "direnv".into(),
+                    "allow".into(),
+                    envrc.to_string_lossy().into_owned(),
+                ]));
+            }
+        }
+    }
+
     emitter.emit(Record::Cd(&r.dir.to_string_lossy()));
     if let Some(n) = r.number {
         if n != 0 {
@@ -399,6 +419,28 @@ fn enter_workspace(
                 )));
             }
         }
+
+        // K2: background-restack the workspace onto base on re-entry, like the
+        // original bg_restack — non-interactive and ABORT-ON-CONFLICT, so it
+        // never leaves the worktree mid-rebase (a manual `cw restack` resolves).
+        let graphite = cfg
+            .integrations
+            .graphite
+            .unwrap_or_else(|| crate::util::in_path("gt"));
+        let inner = if graphite {
+            "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
+             || git rebase --abort >/dev/null 2>&1 || true"
+                .to_string()
+        } else {
+            format!(
+                "git fetch origin >/dev/null 2>&1; \
+                 git rebase origin/{base} </dev/null >/dev/null 2>&1 \
+                 || git rebase --abort >/dev/null 2>&1 || true",
+                base = cfg.runtime.base_branch
+            )
+        };
+        let cmd = format!("cd {} && {{ {inner}; }}", shell_quote(&r.dir.to_string_lossy()));
+        emitter.emit(Record::ExecBg(&["bash".into(), "-c".into(), cmd]));
     }
 
     if let Some(hook) = &cfg.hooks.post_cd {
