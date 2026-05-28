@@ -94,23 +94,50 @@ fn start(
             }
         }
     }
-    if args.tail {
-        logs::show(cfg, resolved, services, args.lines, true)?;
-    }
+    // G4: open the browser BEFORE entering the (blocking) follow loop —
+    // otherwise `--tail --open` never opens anything.
     if args.open {
         for svc in services {
             if let Some(url) = &svc.open_url {
                 let ctx = processes::Ctx::build(cfg, resolved, svc)?;
-                // Don't race the dev server on cold start. Condor's serve.sh
-                // delegates browser-opening to vite's `--open`, which waits
-                // for readiness; mirror that by polling TCP connect first.
+                // Don't race the dev server on cold start: poll TCP connect for
+                // readiness before launching the browser.
                 wait_port_listening(ctx.port, std::time::Duration::from_secs(60));
-                let url = ctx.expand(url);
-                let _ = std::process::Command::new("open").arg(&url).status();
+                open_in_browser(&ctx.expand(url));
             }
         }
     }
+    if args.tail {
+        logs::show(cfg, resolved, services, args.lines, true)?;
+    }
     Ok(())
+}
+
+/// Open a URL in the default browser, cross-platform, surfacing failures.
+fn open_in_browser(url: &str) {
+    use std::process::Command;
+    let (prog, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        // `cmd /c start "" <url>` — the empty title avoids start treating the
+        // URL as a window title.
+        ("cmd", &["/c", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+    let status = Command::new(prog).args(args).arg(url).status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!(
+            "{} couldn't open browser ({prog} exited {}). URL: {url}",
+            "⚠".yellow(),
+            s.code().unwrap_or(-1)
+        ),
+        Err(e) => eprintln!(
+            "{} couldn't open browser ({prog}: {e}). URL: {url}",
+            "⚠".yellow()
+        ),
+    }
 }
 
 fn wait_port_listening(port: u16, timeout: std::time::Duration) -> bool {

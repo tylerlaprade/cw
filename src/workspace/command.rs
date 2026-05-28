@@ -1,4 +1,4 @@
-use crate::cli::{RemoveArgs, WorkspaceAction, WorkspaceArgs};
+use crate::cli::{RemoveArgs, ServeArgs, WorkspaceAction, WorkspaceArgs};
 use crate::config::{self, Config};
 use crate::git::github;
 use crate::shell::{Emitter, Record};
@@ -199,14 +199,34 @@ pub fn open(target: Option<String>, emitter: &mut Emitter) -> Result<()> {
             emitter.emit(Record::Title(&format!("#{}", n)));
         }
     }
-    // Then request the shell to invoke `cw serve start --open` in foreground.
-    let argv = vec![
-        "cw".into(),
-        "serve".into(),
-        "start".into(),
-        "--open".into(),
-    ];
-    emitter.emit(Record::Exec(&argv));
+    if emitter.enabled() {
+        // Under the wrapper: it cd's into the workspace, then runs this.
+        let argv = vec![
+            "cw".into(),
+            "serve".into(),
+            "start".into(),
+            "--open".into(),
+        ];
+        emitter.emit(Record::Exec(&argv));
+    } else {
+        // G6: no wrapper, so the CD record above does nothing and the EXEC
+        // record would be printed and ignored — `cw open` was a silent no-op.
+        // Start services + open the browser directly for the resolved workspace.
+        eprintln!("note: not running under the cw shell wrapper — starting services in place (no cd)");
+        let serve_target = r.number.map(|n| n.to_string()).or(target);
+        crate::serve::run(
+            ServeArgs {
+                action: "start".into(),
+                target: serve_target,
+                tail: false,
+                open: true,
+                no_ai: false,
+                lines: None,
+                service: None,
+            },
+            emitter,
+        )?;
+    }
     Ok(())
 }
 

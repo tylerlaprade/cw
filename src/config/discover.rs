@@ -135,12 +135,14 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
     // Frontend: first candidate with package.json exposing a "dev"/"start" script.
     for (dir, subdir) in &candidates {
         if has_frontend_package(dir) {
-            let start = if dir.join("vite.config.ts").is_file()
-                || dir.join("vite.config.js").is_file()
-            {
-                "npm start -- --port {port}"
-            } else {
+            // Prefer a "dev" script (Vite, Next, most modern setups — all accept
+            // `-- --port`). Fall back to "start" (Create-React-App style, which
+            // reads PORT from env, so we omit --port there). The previous logic
+            // had this backwards (npm start for Vite, which has no start script).
+            let start = if package_has_script(dir, "dev") {
                 "npm run dev -- --port {port}"
+            } else {
+                "npm start"
             };
             // Workspace-scope the kill pattern with {stem}_{n}; otherwise
             // `cw serve stop` for one workspace matches (and kills) every other
@@ -187,6 +189,18 @@ fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
                     .unwrap_or(false)
         })
         .collect()
+}
+
+/// Does `dir/package.json` define a top-level `scripts.<script>` entry?
+/// Light substring probe (avoids pulling serde_json in for a config sniff).
+fn package_has_script(dir: &Path, script: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
+        return false;
+    };
+    match text.find("\"scripts\"") {
+        Some(idx) => text[idx..].contains(&format!("\"{script}\"")),
+        None => false,
+    }
 }
 
 fn has_frontend_package(dir: &Path) -> bool {

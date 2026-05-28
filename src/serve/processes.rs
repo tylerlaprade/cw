@@ -38,7 +38,14 @@ impl<'a> Ctx<'a> {
             .as_ref()
             .context("service has no [port.base]")?
             .base;
-        let port = base.saturating_add(number as u16);
+        // Compute in u32 so a large workspace number can't silently truncate
+        // (number as u16 before the add would wrap); error if it exceeds 65535.
+        let raw_port = u32::from(base)
+            .checked_add(number)
+            .context("port computation overflowed")?;
+        let port = u16::try_from(raw_port).with_context(|| {
+            format!("port {raw_port} exceeds 65535 (workspace number {number} too large)")
+        })?;
         let subdir = svc.subdir.as_deref().unwrap_or(".");
         let cwd = resolved.dir.join(subdir);
         let pid_file = PathBuf::from(expand_template(
