@@ -21,3 +21,8 @@ fn numeric_token_without_workspace_or_pr_errors_instead_of_creating_branch() {
         Runner::Rust,
     );
 }
+
+#[test]
+fn description_create_launches_claude_with_prompt() {
+    dispatch_cases::description_create_launches_claude_with_prompt(Runner::Rust);
+}

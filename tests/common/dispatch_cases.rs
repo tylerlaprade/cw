@@ -61,6 +61,41 @@ pub fn open_without_args_uses_current_workspace(runner: Runner) {
     assert!(stdout.contains("CW\tEXEC\tcw\tserve\tstart\t--open"));
 }
 
+pub fn description_create_launches_claude_with_prompt(runner: Runner) {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("cwdisptest");
+    init_repo(&repo);
+    commit_file(&repo, "README.md", "root\n", "root");
+    if matches!(runner, Runner::Legacy) {
+        install_legacy_scripts(&repo);
+    }
+
+    // PATH without gt/gh so create stays git-only (no Graphite, no PR lookup).
+    let out = run_cw(
+        runner,
+        &repo,
+        "/usr/bin:/bin",
+        &[("CW_WRAPPER", "1")],
+        &["fix", "the", "bug"],
+    );
+    assert!(out.status.success(), "{}", combined_output(&out));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // First-entry description-create: claude launched with the WHOLE description
+    // as the prompt — no --continue (first entry), no --from-pr (no PR).
+    assert!(
+        stdout.contains("CW\tEXEC\tclaude\tfix the bug"),
+        "expected claude launch with the description prompt.\nstdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--continue") && !stdout.contains("--from-pr"),
+        "first-entry create must not --continue/--from-pr.\nstdout: {stdout}"
+    );
+    // The slugified branch's worktree was created as the lowest workspace.
+    let ws = tmp.path().join("cwdisptest_1");
+    assert!(ws.is_dir(), "expected workspace dir {}", ws.display());
+}
+
 pub fn numeric_token_without_workspace_or_pr_errors_instead_of_creating_branch(runner: Runner) {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("cw");
