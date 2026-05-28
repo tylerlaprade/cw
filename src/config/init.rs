@@ -195,8 +195,7 @@ const HEADER: &str = "\
 # Validate this file after editing:                cw config validate
 ";
 
-const SCAFFOLD: &str = "\
-
+const SCAFFOLD: &str = "
 # ---------------------------------------------------------------------------
 # [workspace] — numbering + branch basics.
 # ---------------------------------------------------------------------------

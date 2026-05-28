@@ -37,7 +37,7 @@ pub fn find_stack_worktree(inside: &Path, target: &str, base: &str) -> Option<St
                 if parent != base
                     && parent != "main"
                     && parent != "develop"
-                    && !stack_branches.iter().any(|b| *b == parent)
+                    && !stack_branches.contains(&parent)
                 {
                     stack_branches.clear();
                 }

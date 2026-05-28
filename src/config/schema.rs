@@ -51,7 +51,7 @@ pub struct ServiceCfg {
     pub name: String,
     #[serde(default)]
     pub alias: Vec<String>,
-    /// Subdir under repo root (e.g. "hanaq"). "." for repo root.
+    /// Subdir under repo root (e.g. "server"). "." for repo root.
     pub subdir: Option<String>,
     pub port: Option<PortCfg>,
     pub start: Option<String>,
@@ -90,7 +90,7 @@ pub struct DepInstall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabasesCfg {
-    /// e.g. "hanaq_{n}_{suffix}"
+    /// e.g. "app_{n}_{suffix}"
     pub pattern: String,
     pub suffixes: Vec<String>,
     /// "postgres" or "none"

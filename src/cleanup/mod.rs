@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn protected_includes_base_and_trunks() {
         // I1: a non-develop base (e.g. main) is protected, and the conventional
-        // trunks stay protected too — no hardcoded condor release/* branches.
+        // trunks stay protected too — no hardcoded company-specific release branches.
         let p = protected_branches("main");
         assert!(p.contains("main"));
         assert!(p.contains("master"));

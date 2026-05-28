@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RemoveOpts {
     pub force: bool,
     pub dry_run: bool,
@@ -19,17 +19,6 @@ pub struct RemoveOpts {
     /// still eligible for removal (when there's no active shell session).
     /// `None` disables the override (strict: open/draft PRs always block).
     pub stale_hours: Option<u64>,
-}
-
-impl Default for RemoveOpts {
-    fn default() -> Self {
-        Self {
-            force: false,
-            dry_run: false,
-            no_close_tab: false,
-            stale_hours: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -578,7 +567,7 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
         cfg.runtime
             .repo_root
             .as_deref()
-            .unwrap_or_else(|| p.dir.as_path())
+            .unwrap_or(p.dir.as_path())
     };
     let mut cmd = Command::new("bash");
     cmd.arg("-c")

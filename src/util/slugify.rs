@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn preserves_alphanum() {
-        assert_eq!(slugify("CSC-1234 investigate"), "csc-1234-investigate");
+        assert_eq!(slugify("PROJ-1234 investigate"), "proj-1234-investigate");
     }
 
     #[test]

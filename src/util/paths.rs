@@ -22,24 +22,24 @@ mod tests {
 
     #[test]
     fn detects_trailing_n() {
-        assert_eq!(detect_number(Path::new("/home/t/Code/condor_3"), "condor"), Some(3));
+        assert_eq!(detect_number(Path::new("/home/t/Code/app_3"), "app"), Some(3));
     }
 
     #[test]
     fn detects_middle_n() {
         assert_eq!(
-            detect_number(Path::new("/tmp/condor_15/hanaq/abacus"), "condor"),
+            detect_number(Path::new("/tmp/app_15/web/src"), "app"),
             Some(15)
         );
     }
 
     #[test]
     fn ignores_wrong_stem() {
-        assert_eq!(detect_number(Path::new("/tmp/other_3"), "condor"), None);
+        assert_eq!(detect_number(Path::new("/tmp/other_3"), "app"), None);
     }
 
     #[test]
     fn no_number() {
-        assert_eq!(detect_number(Path::new("/tmp/condor"), "condor"), None);
+        assert_eq!(detect_number(Path::new("/tmp/app"), "app"), None);
     }
 }

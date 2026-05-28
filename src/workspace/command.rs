@@ -89,7 +89,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             if !flags.stack
                 && create_from_pr.is_none()
                 && positional.len() == 1
-                && head.contains(|c| matches!(c, '-' | '_' | '/'))
+                && head.contains(['-', '_', '/'])
             {
                 anyhow::bail!(
                     "{head:?} looks like a branch name but doesn't exist locally or on origin.\n  \
