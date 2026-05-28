@@ -41,7 +41,6 @@ pub enum Command {
     /// hardcoding a specific CLI.
     Resolve(ResolveArgs),
     /// Tear down one or more workspaces.
-    #[command(alias = "rm")]
     Remove(RemoveArgs),
     /// Sweep stale workspaces + branches + orphaned DBs.
     Cleanup(CleanupArgs),

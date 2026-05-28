@@ -151,8 +151,15 @@ pub fn open(target: Option<String>, emitter: &mut Emitter) -> Result<()> {
     Ok(())
 }
 
-pub fn remove(_args: RemoveArgs, _emitter: &mut Emitter) -> Result<()> {
-    Err(anyhow::anyhow!("`cw remove` lands in step 7"))
+pub fn remove(args: RemoveArgs, emitter: &mut Emitter) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cfg = config::discover::load(&cwd)?;
+    let opts = crate::workspace::teardown::RemoveOpts {
+        force: args.force,
+        dry_run: args.dry_run,
+        no_close_tab: args.no_close_tab,
+    };
+    crate::workspace::teardown::run(&cfg, &args.targets, &opts, emitter)
 }
 
 pub fn dispatch(args: WorkspaceArgs, emitter: &mut Emitter) -> Result<()> {
