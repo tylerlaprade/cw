@@ -40,7 +40,10 @@ pub struct Plan {
     pub pr: Option<u32>,
     pub pr_state: Option<PrState>,
     pub uncommitted: bool,
-    pub unique_commits: u32,
+    /// Commits on the branch not contained in the (remote) base branch.
+    /// `None` means git could not determine it — treated as "has work" so a
+    /// failed lookup never reads as "no unique work, safe to delete".
+    pub unique_commits: Option<u32>,
     pub active_session: bool,
     pub inactive_hours: Option<u64>,
     pub databases: Vec<String>,
@@ -175,9 +178,11 @@ pub fn run(cfg: &Config, targets: &[String], opts: &RemoveOpts, emitter: &mut Em
         // Drop DBs in parallel.
         drop_databases(&p.databases);
 
+        let delete_branch = branch_is_safe_to_delete(p);
+
         // Remove worktree. Critical: if we're in cwd, git worktree commands
         // would fail after the dir is gone — cd to / first.
-        if let Err(e) = remove_workspace_dir(cfg, p) {
+        if let Err(e) = remove_workspace_dir(cfg, p, delete_branch) {
             eprintln!(
                 "{} #{} removal failed: {:#}",
                 "✗".red(),
@@ -207,6 +212,17 @@ fn database_names_for(cfg: &Config, n: u32) -> Vec<String> {
 }
 
 pub fn expand_db_names(db: &DatabasesCfg, n: u32) -> Vec<String> {
+    // Safety: a pattern without `{n}` expands to the SAME name for every
+    // workspace, so dropping it would destroy a database shared across all
+    // workspaces. Refuse rather than guess.
+    if !db.pattern.contains("{n}") {
+        eprintln!(
+            "{} [databases].pattern {:?} has no {{n}} — refusing to drop (would target a shared database)",
+            "⚠".yellow(),
+            db.pattern
+        );
+        return Vec::new();
+    }
     db.suffixes
         .iter()
         .map(|s| {
@@ -232,7 +248,7 @@ fn build_plan(
         pr: r.pr,
         pr_state: None,
         uncommitted: false,
-        unique_commits: 0,
+        unique_commits: None,
         active_session: false,
         inactive_hours: None,
         databases,
@@ -251,8 +267,11 @@ fn safety_check(cfg: &Config, p: &mut Plan) {
     let Some(branch) = &p.branch else {
         return;
     };
-    p.unique_commits = commits_ahead(&p.dir, &cfg.runtime.base_branch, branch).unwrap_or(0);
-    if p.unique_commits == 0 {
+    let base = effective_base(&p.dir, &cfg.runtime.base_branch);
+    p.unique_commits = commits_ahead(&p.dir, &base, branch);
+    // Only probe for an active session on the "no unique work" path; an
+    // unknown (None) merge status must not take that path at all.
+    if p.unique_commits == Some(0) {
         p.active_session = has_active_session(&p.dir);
     }
     if let Some(pr) = p.pr {
@@ -264,8 +283,10 @@ fn verdict(p: &Plan, opts: &RemoveOpts) -> Verdict {
     if p.uncommitted {
         return Verdict::Dirty("uncommitted changes".into());
     }
-    // No unique commits vs base: clean unless a shell sits inside it.
-    if p.branch.is_some() && p.unique_commits == 0 {
+    // No unique commits vs base: clean unless a shell sits inside it. A `None`
+    // (couldn't determine) deliberately falls through to the PR-state path,
+    // which defaults to DIRTY — never delete on an unknown merge status.
+    if p.branch.is_some() && p.unique_commits == Some(0) {
         if p.active_session {
             return Verdict::Dirty("active session".into());
         }
@@ -299,6 +320,15 @@ fn verdict(p: &Plan, opts: &RemoveOpts) -> Verdict {
         return Verdict::Dirty("detached / no branch".into());
     }
     Verdict::Dirty("no PR found".into())
+}
+
+/// The branch is safe to delete only when its work survives elsewhere: fully
+/// merged into base, or its PR is merged/closed. A stale-override removal of an
+/// open/draft-PR workspace keeps the branch — the worktree goes, the unmerged
+/// work stays. Never delete on an unknown (`None`) merge status.
+fn branch_is_safe_to_delete(p: &Plan) -> bool {
+    p.unique_commits == Some(0)
+        || matches!(p.pr_state, Some(PrState::Merged) | Some(PrState::Closed))
 }
 
 fn is_dirty(dir: &Path) -> bool {
@@ -335,6 +365,26 @@ fn last_commit_age_hours(dir: &Path) -> Option<u64> {
     let ts: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     Some(now.saturating_sub(ts) / 3600)
+}
+
+/// Prefer the remote-tracking base (`origin/<base>`) when it exists — matching
+/// the original `remove-workspace.sh`, which compared against `origin/develop`
+/// so a stale *local* trunk can't make merged work look unmerged (or vice
+/// versa). Falls back to the local base ref when there's no remote.
+fn effective_base(dir: &Path, base: &str) -> String {
+    let remote = format!("origin/{base}");
+    let exists = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/remotes/{remote}"))
+        .current_dir(dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if exists {
+        remote
+    } else {
+        base.to_string()
+    }
 }
 
 fn commits_ahead(dir: &Path, base: &str, branch: &str) -> Option<u32> {
@@ -381,10 +431,11 @@ fn pr_state(dir: &Path, pr: u32) -> Option<PrState> {
     }
 }
 
-/// Return true if a non-ancestor process has its cwd rooted in `dir`.
-/// Uses `lsof -d cwd` and excludes our own process-tree ancestors so the
-/// script invoking the check doesn't flag itself.
-fn has_active_session(dir: &Path) -> bool {
+/// PIDs of non-ancestor processes whose cwd is rooted in `dir`. Uses
+/// `lsof -d cwd` and excludes our own process-tree ancestors so the process
+/// running the check never counts itself. Shared by the active-session check
+/// and teardown's process kill.
+fn rooted_pids(dir: &Path) -> Vec<u32> {
     let mut ancestors: Vec<u32> = Vec::new();
     let mut pid = std::process::id();
     while pid > 1 {
@@ -400,10 +451,11 @@ fn has_active_session(dir: &Path) -> bool {
         ])
         .output();
     let Ok(out) = out else {
-        return false;
+        return Vec::new();
     };
     let dir_s = dir.to_string_lossy();
     let dir_prefix = format!("{}/", dir_s);
+    let mut pids = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 2 {
@@ -419,11 +471,16 @@ fn has_active_session(dir: &Path) -> bool {
         if *last != dir_s.as_ref() && !last.starts_with(&dir_prefix) {
             continue;
         }
-        if !ancestors.contains(&lpid) {
-            return true;
+        if !ancestors.contains(&lpid) && !pids.contains(&lpid) {
+            pids.push(lpid);
         }
     }
-    false
+    pids
+}
+
+/// Return true if a non-ancestor process has its cwd rooted in `dir`.
+fn has_active_session(dir: &Path) -> bool {
+    !rooted_pids(dir).is_empty()
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
@@ -489,11 +546,135 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn remove_workspace_dir(_cfg: &Config, p: &Plan) -> Result<()> {
-    // Kill any processes rooted in the dir first (services, tail -f, etc).
-    let _ = Command::new("pkill")
-        .args(["-f", &p.dir.to_string_lossy()])
-        .status();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(unique: Option<u32>, pr_state: Option<PrState>, active: bool) -> Plan {
+        Plan {
+            number: 3,
+            dir: PathBuf::from("/tmp/x_3"),
+            branch: Some("feature".into()),
+            pr: pr_state.map(|_| 7),
+            pr_state,
+            uncommitted: false,
+            unique_commits: unique,
+            active_session: active,
+            inactive_hours: None,
+            databases: Vec::new(),
+            head_short: None,
+            is_cwd: false,
+        }
+    }
+
+    // A2: a failed merge-status lookup (None) must never read as "no unique
+    // work" — the workspace stays DIRTY rather than getting deleted.
+    #[test]
+    fn unknown_merge_status_is_dirty_not_clean() {
+        assert!(matches!(
+            verdict(&plan(None, None, false), &RemoveOpts::default()),
+            Verdict::Dirty(_)
+        ));
+    }
+
+    #[test]
+    fn no_unique_commits_no_session_is_clean() {
+        assert!(matches!(
+            verdict(&plan(Some(0), None, false), &RemoveOpts::default()),
+            Verdict::Clean(_)
+        ));
+    }
+
+    #[test]
+    fn no_unique_commits_but_active_session_is_dirty() {
+        assert!(matches!(
+            verdict(&plan(Some(0), None, true), &RemoveOpts::default()),
+            Verdict::Dirty(_)
+        ));
+    }
+
+    #[test]
+    fn unique_commits_no_pr_is_dirty() {
+        assert!(matches!(
+            verdict(&plan(Some(5), None, false), &RemoveOpts::default()),
+            Verdict::Dirty(_)
+        ));
+    }
+
+    // A5: merged-PR removal is clean AND the branch is safe to delete.
+    #[test]
+    fn merged_pr_is_clean_and_branch_deletable() {
+        let p = plan(Some(5), Some(PrState::Merged), false);
+        assert!(matches!(verdict(&p, &RemoveOpts::default()), Verdict::Clean(_)));
+        assert!(branch_is_safe_to_delete(&p));
+    }
+
+    // A5: a stale-override removal of an open-PR workspace is clean (worktree
+    // freed) but the branch is KEPT — it still carries unmerged work.
+    #[test]
+    fn stale_open_pr_is_clean_but_branch_kept() {
+        let opts = RemoveOpts {
+            stale_hours: Some(48),
+            ..RemoveOpts::default()
+        };
+        let mut p = plan(Some(5), Some(PrState::Open), false);
+        p.inactive_hours = Some(72);
+        assert!(matches!(verdict(&p, &opts), Verdict::Clean(_)));
+        assert!(
+            !branch_is_safe_to_delete(&p),
+            "open-PR stale removal must keep the branch"
+        );
+    }
+
+    #[test]
+    fn unknown_merge_status_branch_not_deletable() {
+        assert!(!branch_is_safe_to_delete(&plan(None, None, false)));
+    }
+
+    // A4: a DB pattern lacking {n} must refuse to expand (would drop a shared DB).
+    #[test]
+    fn db_pattern_without_n_refuses() {
+        let db = DatabasesCfg {
+            pattern: "app_db".into(),
+            suffixes: vec!["qa".into()],
+            clone: "postgres".into(),
+            default_source_suffix: "qa".into(),
+        };
+        assert!(expand_db_names(&db, 3).is_empty());
+    }
+
+    #[test]
+    fn db_pattern_with_n_expands() {
+        let db = DatabasesCfg {
+            pattern: "app_{n}_{suffix}".into(),
+            suffixes: vec!["qa".into(), "stg".into()],
+            clone: "postgres".into(),
+            default_source_suffix: "qa".into(),
+        };
+        assert_eq!(expand_db_names(&db, 3), vec!["app_3_qa", "app_3_stg"]);
+    }
+}
+
+fn remove_workspace_dir(cfg: &Config, p: &Plan, delete_branch: bool) -> Result<()> {
+    // Resolve the main worktree BEFORE any deletion or cwd change. In the
+    // {stem}_{N} sibling layout the workspace's *parent* is a plain directory,
+    // not a git repo, so querying from there (the old behavior) failed and all
+    // git commands silently ran from `/` — leaving orphan .git/worktrees
+    // metadata. Query from a known-good location instead: the repo root we were
+    // invoked in, then the doomed worktree itself (still present at this point).
+    let main_worktree = cfg
+        .runtime
+        .repo_root
+        .as_deref()
+        .and_then(crate::git::worktree::main_worktree)
+        .or_else(|| crate::git::worktree::main_worktree(&p.dir));
+
+    // Kill processes whose cwd is rooted in the workspace (dev servers, shells,
+    // `tail -f`) so they release file handles. Precise — by cwd, not a
+    // command-line substring match that could hit unrelated processes.
+    for pid in rooted_pids(&p.dir) {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
 
     // If cwd is inside the target, step out before running git commands.
     if p.is_cwd {
@@ -505,10 +686,7 @@ fn remove_workspace_dir(_cfg: &Config, p: &Plan) -> Result<()> {
         let _ = std::fs::remove_dir_all(p.dir.join(heavy));
     }
 
-    // git worktree remove --force. Run from the repo's main worktree if we
-    // can find one, since running inside the doomed worktree is problematic.
-    let git_root = main_worktree_near(&p.dir);
-    let run_in = git_root.as_deref().unwrap_or_else(|| Path::new("/"));
+    let run_in = main_worktree.as_deref().unwrap_or_else(|| Path::new("/"));
 
     let st = Command::new("git")
         .args(["worktree", "remove", "--force"])
@@ -524,31 +702,17 @@ fn remove_workspace_dir(_cfg: &Config, p: &Plan) -> Result<()> {
             .output();
     }
 
-    // Delete the branch too (ignore failures).
-    if let Some(branch) = &p.branch {
-        let _ = Command::new("git")
-            .args(["branch", "-D", branch])
-            .current_dir(run_in)
-            .output();
+    // Delete the branch only when its work is preserved elsewhere (merged/closed
+    // PR, or no commits beyond base). For a stale-but-open-PR removal the branch
+    // carries unmerged work — keep it; the worktree goes, the branch stays.
+    if delete_branch {
+        if let Some(branch) = &p.branch {
+            let _ = Command::new("git")
+                .args(["branch", "-D", branch])
+                .current_dir(run_in)
+                .output();
+        }
     }
 
     Ok(())
-}
-
-fn main_worktree_near(from: &Path) -> Option<PathBuf> {
-    // `git worktree list --porcelain` starts with the main worktree.
-    let out = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(from.parent().unwrap_or(from))
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            return Some(PathBuf::from(p));
-        }
-    }
-    None
 }

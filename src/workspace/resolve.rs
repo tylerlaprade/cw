@@ -39,9 +39,28 @@ pub fn resolve(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<Resolve
     resolve_branch(cfg, t)
 }
 
+/// Canonicalize, falling back to the input path when it can't be resolved.
+fn canonical(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Workspace number for a concrete dir. The **main worktree is always 0**, even
+/// when its directory name happens to match `{stem}_{N}` (e.g. a repo cloned
+/// into `app_2` with stem `app`). Without this, `cw remove` would map the main
+/// repo to "workspace N" and destroy it. Mirrors the guard in `inventory.rs`.
+fn number_for_dir(cfg: &Config, dir: &Path) -> Option<u32> {
+    if let Some(root) = cfg.runtime.repo_root.as_deref() {
+        let main = worktree::main_worktree(root).unwrap_or_else(|| root.to_path_buf());
+        if canonical(dir) == canonical(&main) {
+            return Some(0);
+        }
+    }
+    paths::detect_number(dir, &cfg.runtime.stem)
+}
+
 fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
-    let number = paths::detect_number(cwd, &cfg.runtime.stem);
-    let dir = if number.is_some() {
+    let in_workspace = paths::detect_number(cwd, &cfg.runtime.stem).is_some();
+    let dir = if in_workspace {
         cwd.to_path_buf()
     } else {
         cfg.runtime
@@ -49,6 +68,7 @@ fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
             .clone()
             .unwrap_or_else(|| cwd.to_path_buf())
     };
+    let number = number_for_dir(cfg, &dir);
     let branch = current_branch(&dir);
     let pr = branch
         .as_deref()
@@ -82,7 +102,9 @@ fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
     let branch = current_branch(&dir);
     let pr = branch.as_deref().and_then(|b| github::pr_for_branch(&dir, b));
     Some(Resolved {
-        number: Some(n),
+        // 0 when `{stem}_{n}` IS the main worktree, so teardown's workspace-0
+        // guard refuses to delete the main repo; otherwise the requested n.
+        number: number_for_dir(cfg, &dir),
         dir,
         branch,
         pr,
@@ -110,7 +132,7 @@ fn resolve_branch(cfg: &Config, branch: &str) -> Result<Resolved> {
         .context("no repo root discovered")?;
     let wt = worktree::find_for_branch(inside, branch)?
         .with_context(|| format!("no worktree checking out branch {branch}"))?;
-    let number = paths::detect_number(&wt.dir, &cfg.runtime.stem);
+    let number = number_for_dir(cfg, &wt.dir);
     let pr = github::pr_for_branch(&wt.dir, branch);
     Ok(Resolved {
         dir: wt.dir,
