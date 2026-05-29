@@ -2,7 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// The effective (possibly-autodetected) config. Everything is optional at the
 /// file level; defaults are filled in by the autodetect pass.
+///
+/// `deny_unknown_fields` on every struct makes a typo'd section or key a hard
+/// parse error (so `cw config validate` reports it) rather than silently
+/// ignored.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub workspace: WorkspaceCfg,
@@ -27,6 +32,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceCfg {
     /// Maximum workspace number (default: unlimited).
     pub max_count: Option<u32>,
@@ -42,6 +48,7 @@ pub struct WorkspaceCfg {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Integrations {
     pub graphite: Option<bool>,
     pub github: Option<bool>,
@@ -52,6 +59,7 @@ pub struct Integrations {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceCfg {
     pub name: String,
     #[serde(default)]
@@ -72,11 +80,13 @@ pub struct ServiceCfg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PortCfg {
     pub base: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DepsCfg {
     #[serde(default = "yes")]
     pub parallel: bool,
@@ -88,12 +98,14 @@ fn yes() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DepInstall {
     pub dir: String,
     pub cmd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabasesCfg {
     /// e.g. "app_{n}_{suffix}"
     pub pattern: String,
@@ -113,6 +125,7 @@ fn default_src_suffix() -> String {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RestackCfg {
     pub hook: Option<String>,
     /// "claude" | "codex" | "manual"
@@ -124,6 +137,7 @@ pub struct RestackCfg {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HooksCfg {
     pub post_create: Option<String>,
     pub pre_remove: Option<String>,
@@ -131,6 +145,7 @@ pub struct HooksCfg {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvCfg {
     /// Files to copy verbatim from source worktree to new worktree.
     #[serde(default)]
@@ -144,12 +159,14 @@ pub struct EnvCfg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvStrip {
     pub file: String,
     pub patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvInject {
     pub file: String,
     pub line: String,
@@ -170,4 +187,19 @@ pub struct Runtime {
     pub stem: String,
     /// Effective base branch (after autodetect).
     pub base_branch: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        // A valid config still parses.
+        assert!(toml::from_str::<Config>("[workspace]\nmax_count = 5\n").is_ok());
+        // A typo'd top-level section/key is a hard error (not silently ignored).
+        assert!(toml::from_str::<Config>("notakey = 1\n").is_err());
+        // A typo'd key inside a known section is also rejected.
+        assert!(toml::from_str::<Config>("[workspace]\nmax_cont = 5\n").is_err());
+    }
 }
