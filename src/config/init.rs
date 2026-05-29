@@ -125,10 +125,13 @@ pub fn run() -> Result<()> {
                  echo \"hook: $# unresolved file(s)\"\n\
                  for f in \"$@\"; do echo \"  $f\"; done\n",
             )?;
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&hook_full)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&hook_full, perms)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&hook_full)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&hook_full, perms)?;
+            }
             println!("{} wrote {}", "✓".green(), hook_full.display());
         }
         overrides.push("[restack]".into());

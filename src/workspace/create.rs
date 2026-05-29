@@ -399,7 +399,9 @@ fn copy_envs(src: &Path, dst: &Path, cfg: &Config) -> Result<()> {
 
 pub(crate) fn autodetect_env_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    for name in [".env", ".env.local"] {
+    // `.claude/settings.local.json` carries per-checkout Claude permissions; the
+    // original copied it so a new workspace inherits them instead of re-prompting.
+    for name in [".env", ".env.local", ".claude/settings.local.json"] {
         if root.join(name).is_file() {
             out.push(name.to_string());
         }
