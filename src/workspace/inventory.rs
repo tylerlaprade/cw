@@ -105,6 +105,9 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
     };
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let wts = worktree::list(root)?;
+    // One batched `gh pr list` for every worktree's PR state, instead of a
+    // `gh pr list --head` + `gh pr view` per workspace (the cleanup N+1).
+    let pr_map = crate::git::github::pr_map(root);
     let mut out = Vec::new();
     for w in wts {
         let canonical_dir = std::fs::canonicalize(&w.dir).unwrap_or_else(|_| w.dir.clone());
@@ -133,11 +136,12 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
             e.merged = is_merged(root, b, &base);
             e.remote_gone = remote_gone(root, b);
             e.no_unique_commits = !has_unique_commits(&w.dir, b, &base);
-            if let Some(pr) = crate::git::github::pr_for_branch(&w.dir, b) {
-                if let Some(state) = pr_state(&w.dir, pr) {
-                    if matches!(state.as_str(), "MERGED" | "CLOSED" | "merged" | "closed") {
-                        e.pr_closed_or_merged = Some(pr);
-                    }
+            if let Some(meta) = pr_map.get(b) {
+                if matches!(
+                    meta.state.as_str(),
+                    "MERGED" | "CLOSED" | "merged" | "closed"
+                ) {
+                    e.pr_closed_or_merged = Some(meta.number);
                 }
             }
         }
@@ -219,24 +223,4 @@ fn has_unique_commits(dir: &Path, branch: &str, base: &str) -> bool {
         }
         _ => true, // conservative: don't flag as "no unique" on error
     }
-}
-
-fn pr_state(dir: &Path, pr: u32) -> Option<String> {
-    let out = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--json",
-            "state",
-            "-q",
-            ".state",
-        ])
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
 }

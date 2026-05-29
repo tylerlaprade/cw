@@ -20,14 +20,30 @@ pub struct Resolved {
 }
 
 pub fn resolve(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<Resolved> {
+    resolve_with(cfg, cwd, target, true)
+}
+
+/// Like [`resolve`] but skips the per-target PR lookup (leaves `pr = None`).
+/// Used by the bulk teardown path, which fills PR state from a single batched
+/// `gh pr list` instead of one `gh pr list --head` per target.
+pub fn resolve_no_pr(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<Resolved> {
+    resolve_with(cfg, cwd, target, false)
+}
+
+fn resolve_with(
+    cfg: &Config,
+    cwd: &Path,
+    target: Option<&str>,
+    fetch_pr: bool,
+) -> Result<Resolved> {
     let Some(t) = target else {
-        return resolve_cwd(cfg, cwd);
+        return resolve_cwd(cfg, cwd, fetch_pr);
     };
 
     if let Ok(n) = t.parse::<u32>() {
         let cap = cfg.workspace.max_count.unwrap_or(99);
         if n <= cap {
-            if let Some(r) = try_number(cfg, n) {
+            if let Some(r) = try_number(cfg, n, fetch_pr) {
                 return Ok(r);
             }
             // Numeric but no workspace exists at that number → fall through
@@ -36,7 +52,7 @@ pub fn resolve(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<Resolve
         return resolve_pr(cfg, n);
     }
 
-    resolve_branch(cfg, t)
+    resolve_branch(cfg, t, fetch_pr)
 }
 
 /// Canonicalize, falling back to the input path when it can't be resolved.
@@ -58,7 +74,7 @@ fn number_for_dir(cfg: &Config, dir: &Path) -> Option<u32> {
     paths::detect_number(dir, &cfg.runtime.stem)
 }
 
-fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
+fn resolve_cwd(cfg: &Config, cwd: &Path, fetch_pr: bool) -> Result<Resolved> {
     let in_workspace = paths::detect_number(cwd, &cfg.runtime.stem).is_some();
     let dir = if in_workspace {
         cwd.to_path_buf()
@@ -72,6 +88,7 @@ fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
     let branch = current_branch(&dir);
     let pr = branch
         .as_deref()
+        .filter(|_| fetch_pr)
         .and_then(|b| github::pr_for_branch(&dir, b));
     Ok(Resolved {
         dir,
@@ -81,13 +98,14 @@ fn resolve_cwd(cfg: &Config, cwd: &Path) -> Result<Resolved> {
     })
 }
 
-fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
+fn try_number(cfg: &Config, n: u32, fetch_pr: bool) -> Option<Resolved> {
     let root = cfg.runtime.repo_root.as_deref()?;
     if n == 0 {
         let dir = worktree::main_worktree(root).unwrap_or_else(|| root.to_path_buf());
         let branch = current_branch(&dir);
         let pr = branch
             .as_deref()
+            .filter(|_| fetch_pr)
             .and_then(|b| github::pr_for_branch(&dir, b));
         return Some(Resolved {
             number: Some(0),
@@ -115,6 +133,7 @@ fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
     let branch = current_branch(&dir);
     let pr = branch
         .as_deref()
+        .filter(|_| fetch_pr)
         .and_then(|b| github::pr_for_branch(&dir, b));
     Some(Resolved {
         // 0 when `{stem}_{n}` IS the main worktree, so teardown's workspace-0
@@ -133,12 +152,13 @@ fn resolve_pr(cfg: &Config, num: u32) -> Result<Resolved> {
         .as_deref()
         .context("no repo root discovered")?;
     let pr = github::view_pr(inside, num).with_context(|| format!("resolving PR #{num} via gh"))?;
-    let mut r = resolve_branch(cfg, &pr.head_branch)?;
+    // The branch's own PR lookup is redundant here — we set r.pr to `num` below.
+    let mut r = resolve_branch(cfg, &pr.head_branch, false)?;
     r.pr = Some(num);
     Ok(r)
 }
 
-fn resolve_branch(cfg: &Config, branch: &str) -> Result<Resolved> {
+fn resolve_branch(cfg: &Config, branch: &str, fetch_pr: bool) -> Result<Resolved> {
     let inside = cfg
         .runtime
         .repo_root
@@ -147,7 +167,11 @@ fn resolve_branch(cfg: &Config, branch: &str) -> Result<Resolved> {
     let wt = worktree::find_for_branch(inside, branch)?
         .with_context(|| format!("no worktree checking out branch {branch}"))?;
     let number = number_for_dir(cfg, &wt.dir);
-    let pr = github::pr_for_branch(&wt.dir, branch);
+    let pr = if fetch_pr {
+        github::pr_for_branch(&wt.dir, branch)
+    } else {
+        None
+    };
     Ok(Resolved {
         dir: wt.dir,
         number,

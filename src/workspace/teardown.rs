@@ -1,14 +1,19 @@
 //! Workspace teardown: safety-check, drop DBs, prune worktree, close tab.
 
 use crate::config::{schema::DatabasesCfg, Config};
+use crate::git::github::{self, PrMeta};
 use crate::shell::{Emitter, Record};
 use crate::util::paths;
 use crate::workspace::resolve;
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Map of head-branch → PR metadata, prefetched once for the whole sweep.
+pub type PrMap = HashMap<String, PrMeta>;
 
 #[derive(Debug, Clone, Default)]
 pub struct RemoveOpts {
@@ -103,7 +108,9 @@ pub fn run(
     };
     let mut plans = Vec::new();
     for t in &targets {
-        let r = match resolve::resolve(cfg, &cwd, Some(t)) {
+        // resolve_no_pr: skip the per-target `gh pr list --head` — PR state is
+        // filled from a single batched `gh pr list` in the safety pass below.
+        let r = match resolve::resolve_no_pr(cfg, &cwd, Some(t)) {
             Ok(r) => r,
             Err(e) if opts.force => match force_orphan_resolution(cfg, t) {
                 Some(r) => r,
@@ -137,10 +144,19 @@ pub fn run(
     let verdicts: Vec<Verdict> = if opts.force {
         Vec::new()
     } else {
+        // One batched `gh pr list` for every target's PR state, instead of a
+        // `gh pr view` per workspace (the original fetched PR data once too).
+        let pr_map = cfg
+            .runtime
+            .repo_root
+            .as_deref()
+            .map(github::pr_map)
+            .unwrap_or_default();
         std::thread::scope(|s| {
+            let map = &pr_map;
             let handles: Vec<_> = plans
                 .iter_mut()
-                .map(|p| s.spawn(|| safety_check(cfg, p)))
+                .map(|p| s.spawn(move || safety_check(cfg, p, map)))
                 .collect();
             for h in handles {
                 let _ = h.join();
@@ -303,34 +319,64 @@ fn build_plan(
     })
 }
 
-fn safety_check(cfg: &Config, p: &mut Plan) {
+fn safety_check(cfg: &Config, p: &mut Plan, pr_map: &PrMap) {
     if !p.dir.is_dir() {
         return;
     }
     p.uncommitted = is_dirty(&p.dir);
     p.head_short = head_short(&p.dir);
     p.inactive_hours = last_commit_age_hours(&p.dir);
-    let Some(branch) = &p.branch else {
+    let Some(branch) = p.branch.clone() else {
         // I2: detached HEAD (common in legacy --tmp/swarm worktrees). Resolve a
         // remote branch whose tip is HEAD and consult its PR, so a merged/closed
         // PR still lets `cw cleanup` sweep it. Without this, detached worktrees
         // were always DIRTY and never removed.
-        if let Some(pr) = detached_head_pr(&p.dir) {
-            p.pr = Some(pr);
-            p.pr_state = pr_state(&p.dir, pr);
+        if let Some(remote_branch) = detached_head_branch(&p.dir) {
+            if let Some((pr, state)) = pr_for(&p.dir, &remote_branch, pr_map) {
+                p.pr = Some(pr);
+                p.pr_state = state;
+            }
         }
         return;
     };
     let base = effective_base(&p.dir, &cfg.runtime.base_branch);
-    p.unique_commits = commits_ahead(&p.dir, &base, branch);
+    p.unique_commits = commits_ahead(&p.dir, &base, &branch);
     // Probe for an active session unconditionally: both the "no unique work"
     // verdict AND the stale/open-PR override (see verdict()) consult
     // active_session, so it must be computed whenever the workspace has a
     // branch — not only on the unique_commits == Some(0) path. Otherwise the
     // stale override removes a workspace someone is actively working in.
     p.active_session = has_active_session(&p.dir);
-    if let Some(pr) = p.pr {
-        p.pr_state = pr_state(&p.dir, pr);
+    if let Some((pr, state)) = pr_for(&p.dir, &branch, pr_map) {
+        p.pr = Some(pr);
+        p.pr_state = state;
+    }
+}
+
+/// Find a branch's PR + state. Prefer the prefetched batch map; fall back to a
+/// per-branch `gh` lookup only when the map is empty (e.g. gh failed/offline).
+/// An absent branch in a populated map means "no PR" — no extra call.
+fn pr_for(dir: &Path, branch: &str, pr_map: &PrMap) -> Option<(u32, Option<PrState>)> {
+    if let Some(meta) = pr_map.get(branch) {
+        return Some((meta.number, pr_state_from(&meta.state, meta.is_draft)));
+    }
+    if pr_map.is_empty() {
+        let pr = github::pr_for_branch(dir, branch)?;
+        return Some((pr, pr_state(dir, pr)));
+    }
+    None
+}
+
+/// Map a gh state string + draft flag to a `PrState`.
+fn pr_state_from(state: &str, is_draft: bool) -> Option<PrState> {
+    if is_draft {
+        return Some(PrState::Draft);
+    }
+    match state {
+        "OPEN" | "open" => Some(PrState::Open),
+        "MERGED" | "merged" => Some(PrState::Merged),
+        "CLOSED" | "closed" => Some(PrState::Closed),
+        _ => None,
     }
 }
 
@@ -542,7 +588,9 @@ fn has_active_session(dir: &Path) -> bool {
 
 /// For a detached HEAD, find a remote branch (`origin/*`) whose tip is HEAD and
 /// return its PR number, mirroring remove-workspace.sh's detached-HEAD path.
-fn detached_head_pr(dir: &Path) -> Option<u32> {
+/// For a detached HEAD, the remote branch (`origin/<b>`) whose tip is HEAD —
+/// so its PR can be looked up like any other branch. Returns the bare branch.
+fn detached_head_branch(dir: &Path) -> Option<String> {
     let out = Command::new("git")
         .args([
             "for-each-ref",
@@ -556,13 +604,12 @@ fn detached_head_pr(dir: &Path) -> Option<u32> {
     if !out.status.success() {
         return None;
     }
-    let branch = String::from_utf8_lossy(&out.stdout)
+    String::from_utf8_lossy(&out.stdout)
         .lines()
         .next()?
         .trim()
-        .strip_prefix("origin/")?
-        .to_string();
-    crate::git::github::pr_for_branch(dir, &branch)
+        .strip_prefix("origin/")
+        .map(str::to_string)
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
@@ -647,6 +694,39 @@ fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_state_from_maps_gh_states() {
+        assert!(matches!(pr_state_from("OPEN", false), Some(PrState::Open)));
+        assert!(matches!(pr_state_from("OPEN", true), Some(PrState::Draft)));
+        assert!(matches!(
+            pr_state_from("MERGED", false),
+            Some(PrState::Merged)
+        ));
+        assert!(matches!(
+            pr_state_from("CLOSED", false),
+            Some(PrState::Closed)
+        ));
+        assert_eq!(pr_state_from("WEIRD", false), None);
+    }
+
+    #[test]
+    fn pr_for_hits_map_and_treats_absent_as_no_pr() {
+        let mut map = PrMap::new();
+        map.insert(
+            "feat".into(),
+            PrMeta {
+                number: 7,
+                state: "MERGED".into(),
+                is_draft: false,
+            },
+        );
+        let dir = Path::new("/nonexistent");
+        // Map hit → no gh call.
+        assert_eq!(pr_for(dir, "feat", &map), Some((7, Some(PrState::Merged))));
+        // Branch absent from a POPULATED map → "no PR" (also no gh call).
+        assert_eq!(pr_for(dir, "other", &map), None);
+    }
 
     fn plan(unique: Option<u32>, pr_state: Option<PrState>, active: bool) -> Plan {
         Plan {

@@ -1,6 +1,7 @@
 //! `gh` helpers. Auto-disabled when integration is off.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -8,6 +9,67 @@ use std::process::Command;
 pub struct PrInfo {
     pub state: String,
     pub head_branch: String,
+}
+
+/// One PR's identity + status, keyed by head branch in [`pr_map`].
+#[derive(Debug, Clone)]
+pub struct PrMeta {
+    pub number: u32,
+    pub state: String,
+    pub is_draft: bool,
+}
+
+/// Fetch ALL of the repo's PRs in one call: head branch → {number, state,
+/// isDraft}. Replaces per-workspace `pr_for_branch` + PR-state lookups in the
+/// bulk paths (cleanup/teardown), matching the original's single
+/// `gh pr list --state all --limit 500`. Empty map on any failure, so callers
+/// can fall back to per-branch lookups (or treat "absent" as "no PR").
+/// First PR seen per head wins (gh lists newest first — mirrors the old `.[0]`).
+pub fn pr_map(inside: &Path) -> HashMap<String, PrMeta> {
+    let mut map = HashMap::new();
+    let out = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "all",
+            "--json",
+            "number,headRefName,state,isDraft",
+            "--limit",
+            "500",
+        ])
+        .current_dir(inside)
+        .output();
+    let Ok(out) = out else { return map };
+    if !out.status.success() {
+        return map;
+    }
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return map;
+    };
+    let Some(arr) = val.as_array() else {
+        return map;
+    };
+    for pr in arr {
+        let Some(branch) = pr.get("headRefName").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(number) = pr.get("number").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let state = pr
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let is_draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+        map.entry(branch.to_string()).or_insert(PrMeta {
+            number: number as u32,
+            state,
+            is_draft,
+        });
+    }
+    map
 }
 
 /// Resolve a PR number to its head branch + state.
