@@ -1,9 +1,9 @@
 //! Combined rendering for triage output.
 
-use super::{gh::Pr, jira::Ticket};
+use super::{actionability::ActionablePr, jira::Ticket};
 use owo_colors::OwoColorize;
 
-pub fn render(prs: &[Pr], tickets: &[Ticket], _verbose: bool, cols: usize) {
+pub fn render(prs: &[ActionablePr], tickets: &[Ticket], verbose: bool, cols: usize) {
     if tickets.is_empty() && prs.is_empty() {
         println!("{} nothing actionable", "✓".green());
         return;
@@ -30,50 +30,34 @@ pub fn render(prs: &[Pr], tickets: &[Ticket], _verbose: bool, cols: usize) {
     if !prs.is_empty() {
         println!("{}", "Pull Requests".bold().underline());
         for pr in prs {
-            let flags = pr_flags(pr);
-            let flag_str = if flags.is_empty() {
-                "".to_string()
-            } else {
-                format!(" [{}]", flags.join(" "))
-            };
             println!(
-                "  #{:<5} {:<12} {}{}",
+                "  #{:<5} {}  {}",
                 pr.number.bold(),
-                state_badge(pr),
                 truncate(&pr.title, cols.saturating_sub(30)),
-                flag_str.dimmed()
+                color_issues(&pr.issues),
             );
+            if verbose && !pr.failed_checks.is_empty() {
+                let names: Vec<String> = pr.failed_checks.iter().map(|(n, _)| n.clone()).collect();
+                println!("        {} {}", "failed:".red(), names.join(", ").dimmed());
+            }
         }
     }
 }
 
-fn state_badge(pr: &Pr) -> String {
-    match pr.merge_state.as_str() {
-        "CLEAN" => "ready".green().to_string(),
-        "BLOCKED" => "blocked".red().to_string(),
-        "BEHIND" => "behind".yellow().to_string(),
-        "DIRTY" => "conflict".red().to_string(),
-        "UNSTABLE" => "unstable".yellow().to_string(),
-        "HAS_HOOKS" | "" => "-".dimmed().to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn pr_flags(pr: &Pr) -> Vec<String> {
-    let mut out = Vec::new();
-    if pr.is_draft {
-        out.push("draft".to_string());
-    }
-    match pr.review_decision.as_str() {
-        "CHANGES_REQUESTED" => out.push("changes requested".to_string()),
-        "APPROVED" => out.push("approved".to_string()),
-        _ => {}
-    }
-    if !pr.failing_checks.is_empty() {
-        let n = pr.failing_checks.len();
-        out.push(format!("{n} failing"));
-    }
-    out
+/// Color each computed issue, matching the original palette.
+fn color_issues(issues: &[String]) -> String {
+    issues
+        .iter()
+        .map(|i| match i.as_str() {
+            "conflict" | "failing ci" => i.red().to_string(),
+            "failing ci*" => i.dimmed().to_string(),
+            "changes requested" => i.yellow().to_string(),
+            "ready to merge" => i.green().to_string(),
+            s if s.ends_with("unresolved") => i.blue().to_string(),
+            _ => i.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn truncate(s: &str, n: usize) -> String {

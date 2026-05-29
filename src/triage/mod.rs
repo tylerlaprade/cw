@@ -1,5 +1,6 @@
 //! `cw triage`: actionable PRs + tickets dashboard.
 
+pub mod actionability;
 pub mod actions;
 pub mod gh;
 pub mod jira;
@@ -49,8 +50,24 @@ pub fn run(args: TriageArgs) -> Result<()> {
         Vec::new()
     });
 
+    // Classify PRs into actionable issues. Needs branch-protection required
+    // checks + the GraphQL review-feedback payload, both keyed by owner/repo.
+    let actionable = if prs.is_empty() {
+        Vec::new()
+    } else {
+        let numbers: Vec<u32> = prs.iter().map(|p| p.number).collect();
+        let (required, feedback) = match gh::repo_owner_name(root) {
+            Some((owner, repo)) => (
+                gh::fetch_required_checks(root, &owner, &repo, &base),
+                gh::fetch_feedback(root, &owner, &repo, &numbers),
+            ),
+            None => (std::collections::HashSet::new(), serde_json::json!({})),
+        };
+        actionability::actionable_prs(&prs, &feedback, &required)
+    };
+
     if !errors.is_empty() {
-        if prs.is_empty() && tickets.is_empty() {
+        if actionable.is_empty() && tickets.is_empty() {
             for e in errors {
                 eprintln!("warn: {e}");
             }
@@ -62,7 +79,7 @@ pub fn run(args: TriageArgs) -> Result<()> {
         }
     }
 
-    render::render(&prs, &tickets, args.verbose, terminal::columns());
+    render::render(&actionable, &tickets, args.verbose, terminal::columns());
     Ok(())
 }
 

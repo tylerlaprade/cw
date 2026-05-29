@@ -67,8 +67,6 @@ pub struct CreateResult {
     pub number: u32,
     pub dir: PathBuf,
     pub branch: String,
-    pub existed: bool,
-    pub setup_log: PathBuf,
 }
 
 /// Build a branch name. If `subject` is already a plausible git ref
@@ -139,8 +137,6 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         number,
         dir,
         branch,
-        existed,
-        setup_log,
     })
 }
 

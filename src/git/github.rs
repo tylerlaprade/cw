@@ -6,16 +6,14 @@ use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct PrInfo {
-    pub number: u32,
     pub state: String,
     pub head_branch: String,
-    pub base_branch: String,
 }
 
 /// Resolve a PR number to its head branch + state.
 ///
-/// Uses `gh pr view <num> --json state,headRefName,baseRefName` and parses
-/// the JSON out by hand (to avoid pulling in serde_json).
+/// Uses `gh pr view <num> --json … -q '… | @tsv'` and reads the tab-separated
+/// fields gh emits (no JSON parsing here).
 pub fn view_pr(inside: &Path, number: u32) -> Result<PrInfo> {
     let out = Command::new("gh")
         .args([
@@ -23,9 +21,9 @@ pub fn view_pr(inside: &Path, number: u32) -> Result<PrInfo> {
             "view",
             &number.to_string(),
             "--json",
-            "state,headRefName,baseRefName",
+            "state,headRefName",
             "-q",
-            "[.state, .headRefName, .baseRefName] | @tsv",
+            "[.state, .headRefName] | @tsv",
         ])
         .current_dir(inside)
         .output()
@@ -40,14 +38,12 @@ pub fn view_pr(inside: &Path, number: u32) -> Result<PrInfo> {
     let stdout = String::from_utf8(out.stdout)?;
     let line = stdout.trim();
     let fields: Vec<&str> = line.split('\t').collect();
-    if fields.len() < 3 {
+    if fields.len() < 2 {
         anyhow::bail!("unexpected gh output: {line:?}");
     }
     Ok(PrInfo {
-        number,
         state: fields[0].to_string(),
         head_branch: fields[1].to_string(),
-        base_branch: fields[2].to_string(),
     })
 }
 

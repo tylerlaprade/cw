@@ -16,13 +16,15 @@ cw() {
     _rc=$?
     (( _rc != 0 )) && return $_rc
     [[ -z "$_out" ]] && return 0
-    # Iterate via mapfile, NOT `while read <<< "$_out"` — a here-string loop
-    # binds its stdin to the payload, leaving EXEC children with a drained
-    # fd 0. The old fix was `EXEC … </dev/tty`, which broke Bun/Ink TUIs
-    # that snapshot stdin at startup.
+    # Populate via a read loop, NOT mapfile (bash 4+, absent on macOS's system
+    # bash 3.2 — mapfile there silently leaves _lines empty, dropping every
+    # record). The here-string binds to THIS loop only, so the dispatch loop
+    # below keeps the function's fd 0 for EXEC children.
     local -a _lines=()
-    mapfile -t _lines <<< "$_out"
     local _line
+    while IFS= read -r _line; do
+        _lines+=("$_line")
+    done <<< "$_out"
     for _line in "${_lines[@]}"; do
         local -a _parts
         IFS=$'\t' read -r -a _parts <<< "$_line"
