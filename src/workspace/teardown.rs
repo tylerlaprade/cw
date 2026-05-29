@@ -285,11 +285,12 @@ fn safety_check(cfg: &Config, p: &mut Plan) {
     };
     let base = effective_base(&p.dir, &cfg.runtime.base_branch);
     p.unique_commits = commits_ahead(&p.dir, &base, branch);
-    // Only probe for an active session on the "no unique work" path; an
-    // unknown (None) merge status must not take that path at all.
-    if p.unique_commits == Some(0) {
-        p.active_session = has_active_session(&p.dir);
-    }
+    // Probe for an active session unconditionally: both the "no unique work"
+    // verdict AND the stale/open-PR override (see verdict()) consult
+    // active_session, so it must be computed whenever the workspace has a
+    // branch — not only on the unique_commits == Some(0) path. Otherwise the
+    // stale override removes a workspace someone is actively working in.
+    p.active_session = has_active_session(&p.dir);
     if let Some(pr) = p.pr {
         p.pr_state = pr_state(&p.dir, pr);
     }
