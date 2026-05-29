@@ -111,10 +111,10 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     // concurrent `cw` runs in THIS repo coordinate while different repos — even
     // with the same stem — never block each other. Tests isolate naturally,
     // each using its own temp repo.
-    let lock_dir = root.join(".git");
+    let lock_dir = claim_lock_dir(root);
     let (number, _lock) = claim_number(cfg, parent_dir, &lock_dir)?;
     let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
-    let existed = branch_exists(root, &branch)?;
+    let existed = ensure_branch_for_worktree(root, &branch)?;
 
     eprintln!("Creating workspace {number}...");
     eprintln!("Creating worktree at {}...", dir.display());
@@ -321,21 +321,110 @@ fn lock_is_stale(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn claim_lock_dir(root: &Path) -> PathBuf {
+    let out = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(root)
+        .output();
+    match out {
+        Ok(out) if out.status.success() => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() {
+                root.join(".git")
+            } else {
+                PathBuf::from(s)
+            }
+        }
+        _ => root.join(".git"),
+    }
+}
+
 pub fn branch_exists(inside: &Path, branch: &str) -> Result<bool> {
+    if local_branch_exists(inside, branch)? || remote_tracking_branch_exists(inside, branch)? {
+        return Ok(true);
+    }
+    Ok(remote_head_exists(inside, branch))
+}
+
+fn ensure_branch_for_worktree(inside: &Path, branch: &str) -> Result<bool> {
+    if local_branch_exists(inside, branch)? {
+        return Ok(true);
+    }
+
+    fetch_branch(inside, branch);
+
+    if remote_tracking_branch_exists(inside, branch)? {
+        let out = Command::new("git")
+            .args(["branch", branch])
+            .arg(format!("origin/{branch}"))
+            .current_dir(inside)
+            .output()
+            .with_context(|| format!("creating local branch {branch} from origin/{branch}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!(
+                "git branch {branch} origin/{branch} failed: {}",
+                stderr.trim()
+            );
+        }
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn local_branch_exists(inside: &Path, branch: &str) -> Result<bool> {
     let out = Command::new("git")
         .args(["show-ref", "--verify", "--quiet"])
         .arg(format!("refs/heads/{}", branch))
         .current_dir(inside)
         .status()?;
-    if out.success() {
-        return Ok(true);
-    }
+    Ok(out.success())
+}
+
+fn remote_tracking_branch_exists(inside: &Path, branch: &str) -> Result<bool> {
     let out = Command::new("git")
         .args(["show-ref", "--verify", "--quiet"])
         .arg(format!("refs/remotes/origin/{}", branch))
         .current_dir(inside)
         .status()?;
     Ok(out.success())
+}
+
+fn remote_head_exists(inside: &Path, branch: &str) -> bool {
+    let has_origin = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(inside)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_origin {
+        return false;
+    }
+    Command::new("git")
+        .args(["ls-remote", "--exit-code", "--heads", "origin", branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(inside)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn fetch_branch(inside: &Path, branch: &str) {
+    let has_origin = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(inside)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !has_origin {
+        return;
+    }
+    let _ = Command::new("git")
+        .args(["fetch", "origin", branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(inside)
+        .output();
 }
 
 fn add_worktree(
@@ -630,7 +719,7 @@ fn kick_off_setup(
 }
 
 /// Build a best-effort parallel DB-clone snippet: for each suffix, clone the
-/// source DB (`pattern` filled with `src_number` + `default_source_suffix`) into
+/// matching source DB (`pattern` filled with `src_number` + that suffix) into
 /// the new workspace's DB (`pattern` filled with `dst_number` + that suffix).
 /// `createdb -T` (template copy) with a `pg_dump | psql` fallback. Every clone
 /// is `|| true` so a missing source never fails the whole setup. Returns None
@@ -652,7 +741,7 @@ fn db_clone_snippet(
         .suffixes
         .iter()
         .map(|suffix| {
-            let src = fill(src_number, &db.default_source_suffix);
+            let src = fill(src_number, suffix);
             let dst = fill(dst_number, suffix);
             // Skip a no-op self-clone (src == dst).
             if src == dst {
@@ -1135,10 +1224,11 @@ mod tests {
     #[test]
     fn db_clone_snippet_clones_each_suffix_from_source() {
         let s = db_clone_snippet(&db_cfg("app_{n}_{suffix}"), 0, 3).unwrap();
-        // qa + stg both cloned from the source's qa DB into workspace 3's DBs.
+        // Each destination suffix clones from the source workspace's matching
+        // suffix. This mirrors the legacy qa/stg/prod behavior.
         assert!(s.contains("createdb -T 'app_0_qa' 'app_3_qa'"), "{s}");
-        assert!(s.contains("'app_3_stg'"), "{s}");
-        assert!(s.contains("pg_dump 'app_0_qa'"), "{s}");
+        assert!(s.contains("createdb -T 'app_0_stg' 'app_3_stg'"), "{s}");
+        assert!(s.contains("pg_dump 'app_0_stg'"), "{s}");
     }
 
     #[test]

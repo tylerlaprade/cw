@@ -195,7 +195,16 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_stderr));
     for (k, v) in &ctx.svc.start_env {
-        cmd.env(k, v);
+        cmd.env(
+            k,
+            expand_template(
+                v,
+                &ctx.stem,
+                ctx.number,
+                ctx.port,
+                &[("svc", &ctx.svc.name), ("ai_mode", ai_mode)],
+            ),
+        );
     }
     // Detach: new process group so SIGHUP to parent doesn't kill the child.
     unsafe {

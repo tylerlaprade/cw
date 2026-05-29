@@ -77,7 +77,7 @@ fn resolve_or_create(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<r
         return Err(err);
     };
 
-    let (branch, pr_num) = if let Ok(n) = t.parse::<u32>() {
+    let (branch, pr_num, from_pr) = if let Ok(n) = t.parse::<u32>() {
         let cap = cfg.workspace.max_count.unwrap_or(99);
         if n <= cap {
             return Err(err);
@@ -99,10 +99,20 @@ fn resolve_or_create(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<r
             );
         }
         println!("Found PR #{n} → {}", pr.head_branch);
-        (pr.head_branch, Some(n))
+        (pr.head_branch, Some(n), true)
     } else {
-        (t.to_string(), None)
+        (t.to_string(), None, false)
     };
+    if !from_pr {
+        let root = cfg
+            .runtime
+            .repo_root
+            .as_deref()
+            .context("no repo root discovered")?;
+        if !create::branch_exists(root, &branch)? {
+            anyhow::bail!("branch {branch:?} does not exist locally or on origin");
+        }
+    }
 
     // F2: a branch in the same stack may already be checked out in a sibling
     // worktree — restack the whole stack there rather than creating a duplicate.
@@ -578,12 +588,17 @@ fn autostash(dir: &Path, base: Option<&str>) -> Result<bool> {
     Ok(st.success())
 }
 
-/// Files with uncommitted changes (unstaged + staged), as a set.
+/// Files `git stash -u` would save: unstaged + staged + untracked. The
+/// untracked set matters because autostash uses `-u`; an untracked file the
+/// rebase ALSO adds would otherwise be stashed and hit a conflicting pop that
+/// the overlap pre-check must catch.
 fn dirty_files(dir: &Path) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     for args in [
         &["diff", "--name-only"][..],
         &["diff", "--cached", "--name-only"][..],
+        // Untracked, honoring .gitignore (same set `git stash -u` saves).
+        &["ls-files", "--others", "--exclude-standard"][..],
     ] {
         if let Ok(out) = Command::new("git").args(args).current_dir(dir).output() {
             if out.status.success() {

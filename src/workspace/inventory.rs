@@ -50,14 +50,52 @@ impl Entry {
     }
 
     /// Treat as a cleanup candidate when idle longer than `stale_hours`.
+    /// `stale_hours == 0` DISABLES the inactivity rule (matching the original
+    /// cleanup.sh's `[[ $STALE_HOURS -gt 0 ]]` guard) — without this floor a 0
+    /// threshold makes `h >= 0` always true and sweeps every workspace.
     pub fn is_inactive(&self, stale_hours: u64) -> bool {
-        self.inactive_hours.is_some_and(|h| h >= stale_hours)
+        stale_hours > 0 && self.inactive_hours.is_some_and(|h| h >= stale_hours)
     }
 
     /// Worktree directory created within `threshold_hours`. Used to spare
     /// freshly-created workspaces from sweeps.
     pub fn is_fresh(&self, threshold_hours: u64) -> bool {
         self.dir_age_hours.is_some_and(|h| h < threshold_hours)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(inactive_hours: Option<u64>, dir_age_hours: Option<u64>) -> Entry {
+        Entry {
+            number: Some(3),
+            dir: PathBuf::from("/tmp/app_3"),
+            branch: Some("feat".into()),
+            merged: false,
+            remote_gone: false,
+            detached: false,
+            no_unique_commits: false,
+            pr_closed_or_merged: None,
+            inactive_hours,
+            dir_age_hours,
+        }
+    }
+
+    #[test]
+    fn stale_hours_zero_disables_inactivity() {
+        // A 0 threshold must DISABLE the inactivity rule (not sweep everything):
+        // a long-idle workspace is not inactive, and is_transient_stale is false
+        // for it when it has unique commits.
+        let e = entry(Some(9999), Some(9999));
+        assert!(!e.is_inactive(0), "stale_hours=0 must disable inactivity");
+        assert!(
+            !e.is_transient_stale(0),
+            "a committed, idle workspace is not transient-stale at stale_hours=0"
+        );
+        // A real threshold still flags it.
+        assert!(e.is_inactive(48));
     }
 }
 
@@ -91,9 +129,10 @@ pub fn list_workspaces(cfg: &Config) -> Result<Vec<Entry>> {
         e.inactive_hours = last_commit_age_hours(&w.dir);
         e.dir_age_hours = dir_age_hours(&w.dir);
         if let Some(b) = &branch {
-            e.merged = is_merged(root, b, &cfg.runtime.base_branch);
+            let base = effective_base(root, &cfg.runtime.base_branch);
+            e.merged = is_merged(root, b, &base);
             e.remote_gone = remote_gone(root, b);
-            e.no_unique_commits = !has_unique_commits(&w.dir, b, &cfg.runtime.base_branch);
+            e.no_unique_commits = !has_unique_commits(&w.dir, b, &base);
             if let Some(pr) = crate::git::github::pr_for_branch(&w.dir, b) {
                 if let Some(state) = pr_state(&w.dir, pr) {
                     if matches!(state.as_str(), "MERGED" | "CLOSED" | "merged" | "closed") {
@@ -125,6 +164,22 @@ fn dir_age_hours(dir: &Path) -> Option<u64> {
     let mtime = std::fs::metadata(dir).ok()?.modified().ok()?;
     let age = SystemTime::now().duration_since(mtime).ok()?;
     Some(age.as_secs() / 3600)
+}
+
+fn effective_base(inside: &Path, base: &str) -> String {
+    let remote = format!("origin/{base}");
+    let exists = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/remotes/{remote}"))
+        .current_dir(inside)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if exists {
+        remote
+    } else {
+        base.to_string()
+    }
 }
 
 fn is_merged(inside: &Path, branch: &str, base: &str) -> bool {

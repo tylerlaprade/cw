@@ -263,8 +263,8 @@ const SCAFFOLD: &str = "
 
 # ---------------------------------------------------------------------------
 # [databases] — per-workspace DB clone. `pattern` names the per-workspace DB;
-# `suffixes` lists the envs to clone. Source = `{pattern}` filled with
-# `default_source_suffix`.
+# `suffixes` lists the envs to clone. Each suffix clones from the source
+# workspace's matching suffix.
 # ---------------------------------------------------------------------------
 # [databases]
 # pattern               = \"myapp_{n}_{suffix}\"

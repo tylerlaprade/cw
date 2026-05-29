@@ -118,6 +118,8 @@ pub struct DepInstall {
 pub struct DatabasesCfg {
     /// e.g. "app_{n}_{suffix}"
     pub pattern: String,
+    /// Suffixes to clone from the source workspace into the new workspace.
+    /// Each destination suffix uses the source workspace's matching suffix.
     pub suffixes: Vec<String>,
     /// "postgres" or "none"
     #[serde(default = "default_clone")]

@@ -246,11 +246,14 @@ pub fn classify(pr: &Pr, fb: &PrFeedback, required: &HashSet<String>) -> Option<
             latest.insert(c.name.as_str(), c);
         }
     }
-    let failed: Vec<(String, String)> = latest
+    let mut failed: Vec<(String, String)> = latest
         .values()
         .filter(|c| c.conclusion.as_deref() == Some("FAILURE"))
         .map(|c| (c.name.clone(), c.details_url.clone().unwrap_or_default()))
         .collect();
+    // Deterministic order (HashMap::values is arbitrary) — the original sorted
+    // failed checks before display.
+    failed.sort();
     let required_failed = failed.iter().any(|(n, _)| required.contains(n));
     let optional_failed = failed.iter().any(|(n, _)| !required.contains(n));
 

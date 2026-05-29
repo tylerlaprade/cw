@@ -1,5 +1,6 @@
 use super::schema::{Config, PortCfg, Runtime, ServiceCfg};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -144,6 +145,11 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
             } else {
                 "npm start"
             };
+            let start_env = if start == "npm start" {
+                BTreeMap::from([("PORT".into(), "{port}".into())])
+            } else {
+                BTreeMap::new()
+            };
             // Workspace-scope the kill pattern with {stem}_{n}; otherwise
             // `cw serve stop` for one workspace matches (and kills) every other
             // workspace's frontend, since pkill -f is a substring match.
@@ -158,7 +164,7 @@ fn detect_services_in(root: &Path) -> Vec<ServiceCfg> {
                 subdir: Some(subdir.clone()),
                 port: Some(PortCfg { base: 3000 }),
                 start: Some(start.into()),
-                start_env: Default::default(),
+                start_env,
                 venv: None,
                 pid_file: Some("/tmp/{stem}_{n}_frontend.pid".into()),
                 log_file: Some("/tmp/{stem}_{n}_frontend.log".into()),

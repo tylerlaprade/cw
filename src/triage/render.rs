@@ -42,7 +42,7 @@ pub fn render(
                 "  {}{} {}  {}",
                 cell.bold(),
                 pad,
-                truncate(&pr.title, cols.saturating_sub(30)),
+                truncate(&pr.title, cols.saturating_sub(30).max(20)),
                 color_issues(&pr.issues),
             );
             if verbose {
@@ -71,7 +71,7 @@ pub fn render(
                 key_cell.bold(),
                 pad,
                 status_c,
-                truncate(&t.summary, cols.saturating_sub(32))
+                truncate(&t.summary, cols.saturating_sub(32).max(20))
             );
         }
         println!();

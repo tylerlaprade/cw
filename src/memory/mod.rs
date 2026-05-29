@@ -121,13 +121,29 @@ fn gather(sources: &[PathBuf]) -> (BTreeMap<String, String>, Vec<String>) {
             }
         }
         for line in read_index_lines(&mem) {
-            let key = line.trim().to_string();
+            let key = index_key(&line);
             if !key.is_empty() && seen.insert(key) {
                 index.push(line);
             }
         }
     }
     (files, index)
+}
+
+/// Dedup key for a MEMORY.md index line: the referenced `slug.md` for a
+/// `[Title](slug.md)` entry (so the same memory isn't listed twice when its
+/// description diverges across worktrees), else the trimmed line text.
+fn index_key(line: &str) -> String {
+    if let Some(open) = line.find("](") {
+        let rest = &line[open + 2..];
+        if let Some(close) = rest.find(')') {
+            let target = &rest[..close];
+            if target.ends_with(".md") {
+                return target.to_string();
+            }
+        }
+    }
+    line.trim().to_string()
 }
 
 /// Add the gathered files + index lines into `target`'s memory dir. Add-only:
@@ -147,11 +163,13 @@ fn write_into(target: &Path, files: &BTreeMap<String, String>, index: &[String])
         }
         let _ = std::fs::write(&dest, content);
     }
-    // Union index lines: keep the target's, append any not already present.
+    // Union index lines: keep the target's, append any not already present
+    // (deduped by referenced memory file, so a diverging description can't
+    // produce two entries for the same memory).
     let mut lines = read_index_lines(&mem);
-    let mut seen: HashSet<String> = lines.iter().map(|l| l.trim().to_string()).collect();
+    let mut seen: HashSet<String> = lines.iter().map(|l| index_key(l)).collect();
     for line in index {
-        let key = line.trim().to_string();
+        let key = index_key(line);
         if !key.is_empty() && seen.insert(key) {
             lines.push(line.clone());
         }

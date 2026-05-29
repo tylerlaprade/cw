@@ -44,6 +44,19 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             "numeric target {head:?} did not match an existing workspace or PR; use spaces for new work"
         );
     }
+    let full_input = positional.join(" ");
+    let prospective_branch = create::branch_for_subject(&full_input);
+    // A single verbatim token naming an existing branch is a checkout request,
+    // even if that branch is not currently checked out in any worktree.
+    let existing_branch_entry = create_from_pr.is_none()
+        && positional.len() == 1
+        && prospective_branch == full_input
+        && cfg
+            .runtime
+            .repo_root
+            .as_deref()
+            .map(|root| create::branch_exists(root, &prospective_branch).unwrap_or(false))
+            .unwrap_or(false);
 
     let flags = LaunchFlags {
         stack,
@@ -89,6 +102,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // descriptions and `--stack` slugs are still allowed.
             if !flags.stack
                 && create_from_pr.is_none()
+                && !existing_branch_entry
                 && positional.len() == 1
                 && head.contains(['-', '_', '/'])
             {
@@ -102,10 +116,11 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // branch comes from the PR and prompt stays as tail only. For
             // description-create, the whole positional (head + tail) is both
             // the slug source and the Claude prompt — matching Bash `$*`.
-            let is_description_create = create_from_pr.is_none();
-            let full_input = positional.join(" ");
+            let is_description_create = create_from_pr.is_none() && !existing_branch_entry;
             let subject = if let Some(pr_target) = &create_from_pr {
                 pr_target.branch.clone()
+            } else if existing_branch_entry {
+                prospective_branch.clone()
             } else {
                 full_input.clone()
             };
@@ -115,18 +130,6 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // out in a sibling worktree, enter it instead of creating a
             // duplicate worktree for the stack. (For a brand-new description the
             // slug branch doesn't exist yet, so this is a no-op there.)
-            let prospective_branch = create::branch_for_subject(&subject);
-            // A single verbatim token naming an EXISTING branch is a checkout
-            // request, not a description — don't hand the branch name to the
-            // editor as a prompt.
-            let verbatim_branch_entry = create_from_pr.is_none()
-                && prospective_branch == full_input
-                && cfg
-                    .runtime
-                    .repo_root
-                    .as_deref()
-                    .map(|root| create::branch_exists(root, &prospective_branch).unwrap_or(false))
-                    .unwrap_or(false);
             if let Some(root) = cfg.runtime.repo_root.as_deref() {
                 if let Some(hit) = crate::git::graphite::find_stack_worktree(
                     root,
@@ -140,7 +143,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                             r.dir.display(),
                             prospective_branch
                         )));
-                        let launch_prompt = if verbatim_branch_entry {
+                        let launch_prompt = if existing_branch_entry {
                             None
                         } else if is_description_create {
                             Some(full_input)
@@ -165,7 +168,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 }
             }
 
-            let launch_prompt = if verbatim_branch_entry {
+            let launch_prompt = if existing_branch_entry {
                 None
             } else if is_description_create {
                 Some(full_input)
@@ -190,8 +193,24 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                     // stale ancestry). Switch into that worktree with --continue
                     // instead of failing with a raw `git worktree add` error —
                     // mirrors the original's rc-2 → --continue recovery.
-                    if is_busy_worktree_error(&format!("{e:#}")) {
-                        if let Ok(r) = resolve::resolve(&cfg, &cwd, Some(&prospective_branch)) {
+                    let err_str = format!("{e:#}");
+                    if is_busy_worktree_error(&err_str) {
+                        // Prefer the exact path git named — it works even when
+                        // that worktree is DETACHED mid-rebase, where a
+                        // branch→worktree lookup (resolve) finds nothing (HEAD is
+                        // detached, so porcelain shows no `branch refs/heads/…`).
+                        // Mirrors the original's stderr-path extraction.
+                        let busy = parse_busy_worktree_path(&err_str)
+                            .map(|dir| resolve::Resolved {
+                                number: crate::util::paths::detect_number(&dir, &cfg.runtime.stem),
+                                pr: github::pr_for_branch(&dir, &prospective_branch),
+                                branch: Some(prospective_branch.clone()),
+                                dir,
+                            })
+                            .or_else(|| {
+                                resolve::resolve(&cfg, &cwd, Some(&prospective_branch)).ok()
+                            });
+                        if let Some(r) = busy {
                             emitter.emit(Record::Msg(&format!(
                                 "Branch {prospective_branch} already in use by {} (may be mid-rebase) — switching there",
                                 r.dir.display()
@@ -221,7 +240,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // (so we just created a fresh worktree for it) — resume its linked
             // PR's Claude session, matching the original `gh pr list --head`
             // lookup. New description-slugs have no PR yet, so this is a no-op there.
-            let resumed_pr = if verbatim_branch_entry {
+            let resumed_pr = if existing_branch_entry {
                 cfg.runtime
                     .repo_root
                     .as_deref()
@@ -323,7 +342,7 @@ fn do_next_number() -> Result<()> {
         .context("not inside a git repo")?;
     let parent = root.parent().context("repo root has no parent")?;
     // Per-repo claim lock dir (the repo's git dir), not global /tmp.
-    let lock_dir = root.join(".git");
+    let lock_dir = create::claim_lock_dir(root);
     let (n, lock) = create::claim_number(&cfg, parent, &lock_dir)?;
     lock.release();
     println!("{}", n);
@@ -703,6 +722,18 @@ mod launch_tests {
     }
 
     #[test]
+    fn busy_worktree_path_parsed_from_git_error() {
+        // The recovery must extract the path from git's message even when that
+        // worktree is detached mid-rebase (a branch lookup would miss it).
+        let err = "git worktree add failed: fatal: 'feat' is already used by worktree at '/Users/t/Code/app_4'";
+        assert_eq!(
+            super::parse_busy_worktree_path(err),
+            Some(std::path::PathBuf::from("/Users/t/Code/app_4"))
+        );
+        assert_eq!(super::parse_busy_worktree_path("some other error"), None);
+    }
+
+    #[test]
     fn first_entry_description_launches_claude_with_prompt_only() {
         let argv = compose_editor_launch(
             &resolved(Some("fix-bug"), None),
@@ -832,4 +863,15 @@ fn shell_quote(s: &str) -> String {
 /// checked out in another worktree (git: "is already used by worktree at ...").
 fn is_busy_worktree_error(err: &str) -> bool {
     err.contains("already used by worktree")
+}
+
+/// Extract the worktree path from git's "already used by worktree at '<path>'"
+/// message. Works regardless of the busy worktree's rebase/detached state —
+/// unlike a branch→worktree lookup, which misses a detached (mid-rebase) one.
+fn parse_busy_worktree_path(err: &str) -> Option<std::path::PathBuf> {
+    const MARKER: &str = "already used by worktree at '";
+    let start = err.find(MARKER)? + MARKER.len();
+    let rest = &err[start..];
+    let end = rest.find('\'')?;
+    Some(std::path::PathBuf::from(&rest[..end]))
 }

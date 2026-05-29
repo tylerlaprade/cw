@@ -103,7 +103,14 @@ pub fn run(
     };
     let mut plans = Vec::new();
     for t in &targets {
-        let r = resolve::resolve(cfg, &cwd, Some(t))?;
+        let r = match resolve::resolve(cfg, &cwd, Some(t)) {
+            Ok(r) => r,
+            Err(e) if opts.force => match force_orphan_resolution(cfg, t) {
+                Some(r) => r,
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        };
         let Some(n) = r.number else {
             eprintln!(
                 "{} {} does not resolve to a numbered workspace — skipping",
@@ -225,6 +232,24 @@ pub fn run(
     Ok(())
 }
 
+fn force_orphan_resolution(cfg: &Config, target: &str) -> Option<resolve::Resolved> {
+    let n = target.parse::<u32>().ok()?;
+    if n == 0 || n > cfg.workspace.max_count.unwrap_or(99) {
+        return None;
+    }
+    let root = cfg.runtime.repo_root.as_deref()?;
+    let parent = root.parent()?;
+    let sibling = parent.join(format!("{}_{}", cfg.runtime.stem, n));
+    let tmp = Path::new("/tmp").join(format!("{}_{}", cfg.runtime.stem, n));
+    let dir = if tmp.is_dir() { tmp } else { sibling };
+    Some(resolve::Resolved {
+        dir,
+        number: Some(n),
+        branch: None,
+        pr: None,
+    })
+}
+
 fn database_names_for(cfg: &Config, n: u32) -> Vec<String> {
     let Some(db) = &cfg.databases else {
         return Vec::new();
@@ -329,7 +354,10 @@ fn verdict(p: &Plan, opts: &RemoveOpts) -> Verdict {
                 return Verdict::Clean(format!("PR {}", state.label()));
             }
             PrState::Open | PrState::Draft => {
-                if let Some(stale) = opts.stale_hours {
+                // stale_hours == 0 disables the inactivity override (a 0
+                // threshold must NOT auto-clean open/draft PRs — h >= 0 is always
+                // true). Mirrors the original's `[[ $STALE_HOURS -gt 0 ]]` gate.
+                if let Some(stale) = opts.stale_hours.filter(|s| *s > 0) {
                     if let Some(h) = p.inactive_hours {
                         if h >= stale && !p.active_session {
                             return Verdict::Clean(format!(

@@ -178,6 +178,9 @@ fn current_branch_prefix(dir: &std::path::Path) -> Option<String> {
 }
 
 fn extract_project_key(text: &str) -> Option<String> {
-    let re = regex::Regex::new(r"([A-Z]+)-\d+").ok()?;
+    // Require a real Jira-issue token: a ≥2-letter project key + issue number on
+    // word boundaries, so prose tokens like "PR-1" or "UTF-8" in a PR body don't
+    // get treated as a project and produce a bogus JQL.
+    let re = regex::Regex::new(r"\b([A-Z]{2,})-\d+\b").ok()?;
     re.captures(text)?.get(1).map(|m| m.as_str().to_string())
 }
