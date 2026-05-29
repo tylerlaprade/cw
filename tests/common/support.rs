@@ -1,3 +1,7 @@
+// Shared test helpers: each integration-test binary includes this module but
+// uses only a subset, so per-binary dead-code warnings are expected.
+#![allow(dead_code)]
+
 use assert_cmd::cargo::CommandCargoExt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

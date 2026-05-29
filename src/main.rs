@@ -1,3 +1,7 @@
+// Helper fns are sometimes defined after a file's `#[cfg(test)] mod tests`;
+// that ordering is intentional in this crate.
+#![allow(clippy::items_after_test_module)]
+
 mod cli;
 mod config;
 mod exec;

@@ -1,3 +1,6 @@
+// Shared dispatch test cases; not every test binary exercises every case.
+#![allow(dead_code)]
+
 use crate::support::{
     add_worktree, combined_output, commit_file, init_repo, install_legacy_scripts, run_cw, Runner,
 };
