@@ -115,6 +115,17 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             // duplicate worktree for the stack. (For a brand-new description the
             // slug branch doesn't exist yet, so this is a no-op there.)
             let prospective_branch = create::branch_for_subject(&subject);
+            // A single verbatim token naming an EXISTING branch is a checkout
+            // request, not a description — don't hand the branch name to the
+            // editor as a prompt.
+            let verbatim_branch_entry = create_from_pr.is_none()
+                && prospective_branch == full_input
+                && cfg
+                    .runtime
+                    .repo_root
+                    .as_deref()
+                    .map(|root| create::branch_exists(root, &prospective_branch).unwrap_or(false))
+                    .unwrap_or(false);
             if let Some(root) = cfg.runtime.repo_root.as_deref() {
                 if let Some(hit) = crate::git::graphite::find_stack_worktree(
                     root,
@@ -128,7 +139,9 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                             r.dir.display(),
                             prospective_branch
                         )));
-                        let launch_prompt = if is_description_create {
+                        let launch_prompt = if verbatim_branch_entry {
+                            None
+                        } else if is_description_create {
                             Some(full_input)
                         } else {
                             flags.prompt.clone()
@@ -166,7 +179,9 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 branch: Some(r.branch),
                 pr: None,
             };
-            let launch_prompt = if is_description_create {
+            let launch_prompt = if verbatim_branch_entry {
+                None
+            } else if is_description_create {
                 Some(full_input)
             } else {
                 flags.prompt.clone()

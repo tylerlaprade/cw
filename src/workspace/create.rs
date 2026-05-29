@@ -306,7 +306,7 @@ fn lock_is_stale(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn branch_exists(inside: &Path, branch: &str) -> Result<bool> {
+pub fn branch_exists(inside: &Path, branch: &str) -> Result<bool> {
     let out = Command::new("git")
         .args(["show-ref", "--verify", "--quiet"])
         .arg(format!("refs/heads/{}", branch))
