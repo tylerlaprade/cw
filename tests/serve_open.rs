@@ -17,6 +17,10 @@ use std::time::{Duration, Instant};
 use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
+fn bin_in(dirs: &[&str], bin: &str) -> bool {
+    dirs.iter().any(|d| Path::new(d).join(bin).is_file())
+}
+
 fn pick_port() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
@@ -51,6 +55,12 @@ fn kill_port(port: u16) {
 
 #[test]
 fn serve_open_waits_for_frontend_port() {
+    // Needs python3 (the mock dev server) + nc (the mock `open` readiness probe)
+    // in the sandboxed PATH; skip rather than fail where they're absent.
+    if !bin_in(&["/usr/bin", "/bin"], "python3") || !bin_in(&["/usr/bin", "/bin"], "nc") {
+        eprintln!("skipping serve_open_waits_for_frontend_port: needs python3 + nc in /usr/bin:/bin");
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     let stem = "openwait";

@@ -34,7 +34,10 @@ pub struct Config {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceCfg {
-    /// Maximum workspace number (default: unlimited).
+    /// Highest workspace number to allocate / treat a numeric token as a
+    /// workspace (above it, a number is resolved as a PR). Default 99 when
+    /// unset — this generalizes the original tool's hard-coded 48 (an
+    /// Auth0-callback limit), so set it to match any upstream cap you have.
     pub max_count: Option<u32>,
     /// Override auto-detected base branch (default: develop|main|master).
     pub base_branch: Option<String>,
