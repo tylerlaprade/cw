@@ -387,8 +387,16 @@ fn warn_orphaned_dbs(cfg: &Config, db: &crate::config::schema::DatabasesCfg) {
         let Some(n) = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok()) else {
             continue;
         };
-        let dir = parent.join(format!("{}_{}", stem, n));
-        if !dir.is_dir() {
+        // Skip the template/base DB (n == 0): it has no numbered workspace dir.
+        if n == 0 {
+            continue;
+        }
+        let name = format!("{}_{}", stem, n);
+        // A workspace can live beside the repo or in /tmp (legacy --tmp/swarm);
+        // a DB backing either location is not orphaned.
+        let present =
+            parent.join(&name).is_dir() || std::path::Path::new("/tmp").join(&name).is_dir();
+        if !present {
             println!(
                 "{} orphaned DB: {} (no matching workspace dir)",
                 "⚠".yellow(),
