@@ -40,12 +40,19 @@ pub fn run(args: TriageArgs) -> Result<()> {
         cfg.triage.jira_statuses.clone()
     };
 
+    // Honor the acli integration toggle: explicit `false` disables Jira; unset
+    // autodetects from $PATH (like the original's `command -v acli` skip).
+    let acli = cfg
+        .integrations
+        .acli
+        .unwrap_or_else(|| crate::util::in_path("acli"));
+
     // Fan out: PRs and tickets in parallel. Keep the raw join results so a
     // panicking worker degrades to an error line instead of aborting triage.
     let (prs_join, tickets_join) = std::thread::scope(|s| {
         let p = s.spawn(|| gh::list_my_open_prs(root, &base));
         let t = s.spawn(move || {
-            if project.is_empty() {
+            if !acli || project.is_empty() {
                 Ok::<Vec<jira::Ticket>, anyhow::Error>(Vec::new())
             } else {
                 jira::my_actionable_tickets(&project, &statuses)

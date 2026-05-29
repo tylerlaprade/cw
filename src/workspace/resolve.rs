@@ -98,9 +98,20 @@ fn try_number(cfg: &Config, n: u32) -> Option<Resolved> {
     }
     let parent = root.parent()?;
     let dir = parent.join(format!("{}_{}", cfg.runtime.stem, n));
-    if !dir.is_dir() {
-        return None;
-    }
+    let dir = if dir.is_dir() {
+        dir
+    } else {
+        // Fall back to the legacy /tmp/{stem}_{n} location (the original's
+        // --tmp/swarm placement). cleanup + teardown still recognize these, so
+        // the numeric resolver must too — otherwise `cw <N>`/`open`/`restack`
+        // can't reach a /tmp workspace that `cw cleanup` will happily list.
+        let tmp = Path::new("/tmp").join(format!("{}_{}", cfg.runtime.stem, n));
+        if tmp.is_dir() {
+            tmp
+        } else {
+            return None;
+        }
+    };
     let branch = current_branch(&dir);
     let pr = branch
         .as_deref()

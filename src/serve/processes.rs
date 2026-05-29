@@ -124,9 +124,13 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
         anyhow::bail!("service cwd not found: {}", ctx.cwd.display());
     }
 
+    // `{ai_mode}` ("true"/"false") is exposed to BOTH the pre_start hook and the
+    // start command, so a service can branch on AI/QA mode — e.g. append
+    // `--noreload` (Django) or `--no-watch` for a stable snapshot under `--no-ai`.
+    let ai_mode = if no_ai { "false" } else { "true" };
+
     // Fire the pre_start shell snippet if present (best-effort).
     if let Some(snippet) = &ctx.svc.pre_start {
-        let ai_mode = if no_ai { "false" } else { "true" };
         let snippet = expand_template(
             snippet,
             &ctx.stem,
@@ -158,7 +162,8 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
         }
     }
     shell_cmd.push_str("exec ");
-    shell_cmd.push_str(&ctx.start_cmd);
+    // `{ai_mode}` isn't substituted at Ctx::build time, so fill it in now.
+    shell_cmd.push_str(&ctx.start_cmd.replace("{ai_mode}", ai_mode));
 
     let log = OpenOptions::new()
         .create(true)

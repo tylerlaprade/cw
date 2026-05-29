@@ -11,7 +11,11 @@
 /// `detect_workspace_number`.
 pub fn detect_number(path: &std::path::Path, stem: &str) -> Option<u32> {
     let name = path.file_name()?.to_str()?;
-    name.strip_prefix(&format!("{stem}_"))?.parse::<u32>().ok()
+    let n = name.strip_prefix(&format!("{stem}_"))?.parse::<u32>().ok()?;
+    // `{stem}_0` is not a workspace: 0 is reserved for the main worktree (decided
+    // by path-equality, not by name), and cw never allocates it. Mirrors the
+    // original's `-gt 0` guard.
+    (n > 0).then_some(n)
 }
 
 #[cfg(test)]
@@ -46,5 +50,11 @@ mod tests {
     #[test]
     fn no_number() {
         assert_eq!(detect_number(Path::new("/tmp/app"), "app"), None);
+    }
+
+    #[test]
+    fn zero_is_not_a_workspace() {
+        // {stem}_0 is reserved for the main worktree, never a numbered workspace.
+        assert_eq!(detect_number(Path::new("/tmp/app_0"), "app"), None);
     }
 }

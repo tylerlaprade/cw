@@ -198,7 +198,9 @@ pub fn claim_number(cfg: &Config, parent: &Path, tmp_dir: &Path) -> Result<(u32,
     for _ in 0..max.saturating_add(1) {
         let used = scan_used_numbers(&stem, parent, tmp_dir, repo_root.as_deref());
         let Some(n) = (1..=max).find(|n| !used.contains(n)) else {
-            anyhow::bail!("no free workspace number ≤ {}", max);
+            anyhow::bail!(
+                "no free workspace number ≤ {max} — free a slot with `cw cleanup` or `cw remove <N>`"
+            );
         };
         let lock = tmp_dir.join(format!(".devcli_{}_{}_claim", stem, n));
         match std::fs::create_dir(&lock) {
@@ -214,7 +216,9 @@ pub fn claim_number(cfg: &Config, parent: &Path, tmp_dir: &Path) -> Result<(u32,
             }
         }
     }
-    anyhow::bail!("no free workspace number ≤ {} (races exhausted)", max);
+    anyhow::bail!(
+        "no free workspace number ≤ {max} (races exhausted) — free a slot with `cw cleanup` or `cw remove <N>`"
+    );
 }
 
 fn scan_used_numbers(

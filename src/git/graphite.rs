@@ -137,10 +137,16 @@ fn gt_stack_contains(dir: &Path, target: &str) -> bool {
         .output();
     match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            // gt ls -s prints one branch per line behind tree-drawing glyphs;
-            // a whitespace token equal to target means target is in this stack.
+            // gt ls -s prints "<glyph> <branch> [annotations]" per line. Match
+            // only the FIRST alphanumeric-leading token (the branch name) so an
+            // annotation token like "(needs" can't false-positive — matching the
+            // original's `awk '{...first /^[A-Za-z0-9]/ token...}'`.
             .lines()
-            .any(|line| line.split_whitespace().any(|tok| tok == target)),
+            .filter_map(|line| {
+                line.split_whitespace()
+                    .find(|tok| tok.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()))
+            })
+            .any(|tok| tok == target),
         _ => false,
     }
 }
