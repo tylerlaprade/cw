@@ -7,7 +7,7 @@
 #[path = "common/support.rs"]
 mod support;
 
-use support::{combined_output, commit_file, init_repo, run_cw, Runner};
+use support::{add_worktree, combined_output, commit_file, init_repo, run_cw, Runner};
 use tempfile::TempDir;
 
 #[test]
@@ -59,5 +59,33 @@ fn remove_refuses_main_worktree_named_like_a_workspace() {
     assert!(
         repo.join(".git").exists() && repo.join("README.md").exists(),
         "main repo must still exist after refused removal"
+    );
+}
+
+#[test]
+fn remove_refuses_dirty_workspace_without_force() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("app");
+    init_repo(&repo);
+    commit_file(&repo, "README.md", "root\n", "root");
+
+    // A real numbered workspace as a sibling worktree, with uncommitted work.
+    let ws = tmp.path().join("app_3");
+    add_worktree(&repo, &ws, "feat-3", Runner::Rust);
+    std::fs::write(ws.join("README.md"), "uncommitted edit\n").unwrap();
+
+    // `cw remove 3` WITHOUT --force must skip the dirty workspace and leave it
+    // on disk. (run() exits 0 but reports DIRTY + "Skipping".)
+    let out = run_cw(Runner::Rust, &repo, "/usr/bin:/bin", &[], &["remove", "3"]);
+    let combined = combined_output(&out);
+    assert!(
+        ws.join("README.md").exists(),
+        "dirty workspace must NOT be removed without --force\n{combined}"
+    );
+    assert!(
+        combined.contains("DIRTY")
+            || combined.to_lowercase().contains("skipping")
+            || combined.to_lowercase().contains("uncommitted"),
+        "expected a dirty/skip notice; got:\n{combined}"
     );
 }
