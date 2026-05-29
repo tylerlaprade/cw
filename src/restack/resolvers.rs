@@ -23,9 +23,9 @@ impl Kind {
     }
 
     pub fn autodetect() -> Self {
-        if in_path("claude") {
+        if crate::util::in_path("claude") {
             Self::Claude
-        } else if in_path("codex") {
+        } else if crate::util::in_path("codex") {
             Self::Codex
         } else {
             Self::Manual
@@ -104,10 +104,4 @@ fn run_manual(_dir: &Path, files: &[PathBuf]) -> Result<()> {
         "cw restack".bold()
     );
     Ok(())
-}
-
-fn in_path(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
-        .unwrap_or(false)
 }

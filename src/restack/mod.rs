@@ -644,11 +644,5 @@ mod tests {
 }
 
 fn graphite_enabled(cfg: &Config) -> bool {
-    cfg.integrations.graphite.unwrap_or_else(|| in_path("gt"))
-}
-
-fn in_path(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
-        .unwrap_or(false)
+    cfg.integrations.graphite.unwrap_or_else(|| crate::util::in_path("gt"))
 }
