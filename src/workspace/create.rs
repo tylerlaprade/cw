@@ -344,11 +344,16 @@ fn add_worktree(
     } else {
         cmd.args(["-b", branch]).arg(dir).arg(parent_branch);
     }
-    let status = cmd
-        .status()
+    // Capture stderr (not inherit) so the caller can detect git's
+    // "is already used by worktree at '<path>'" message and recover by
+    // switching into that worktree (busy-worktree → --continue).
+    let out = cmd
+        .output()
         .with_context(|| format!("git worktree add {}", dir.display()))?;
-    if !status.success() {
-        anyhow::bail!("git worktree add failed");
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        eprint!("{stderr}");
+        anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
     Ok(())
 }
@@ -528,11 +533,14 @@ fn kick_off_setup(
     // this — H3). Phases are newline-joined and run under `bash -c` (no set -e).
     let mut phases: Vec<String> = Vec::new();
 
-    // H2: restack an existing (fetched-from-remote) branch onto its parent,
-    // best-effort — mirrors new-workspace.sh's `try_restack` on EXISTING_BRANCH.
+    // H2: restack an existing branch onto its parent, best-effort — mirrors
+    // new-workspace.sh's `try_restack` on EXISTING_BRANCH, which deliberately
+    // used `gt get` WITHOUT `--force` to avoid clobbering un-pushed local work
+    // on a branch that was created elsewhere. (T1.2: cw previously forced here,
+    // inverting the original's safety choice.)
     if existed && graphite_enabled(cfg) {
         phases.push(
-            "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
+            "gt get </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
              || git rebase --abort >/dev/null 2>&1 || true"
                 .into(),
         );
@@ -564,7 +572,25 @@ fn kick_off_setup(
     if let Some(db) = &cfg.databases {
         if db.clone == "postgres" {
             if let Some(snippet) = db_clone_snippet(db, src_number, number) {
-                phases.push(snippet);
+                // Postgres `createdb -T` (the fast template-copy path) fails if any
+                // session is connected to the SOURCE template DB — the common case
+                // when branching off a running workspace, forcing the slow
+                // pg_dump|psql fallback. Bounce the source workspace's dev server
+                // around the clone (only if it was running), mirroring
+                // new-workspace.sh's stop/restart — but per-workspace, not global.
+                match source_bounce(cfg, src_number) {
+                    Some((pre, post)) => phases.push(format!("{pre}\n{snippet}\n{post}")),
+                    None => phases.push(snippet),
+                }
+            }
+            // post_clone: bring the freshly-cloned DB up to the branch's schema
+            // (e.g. `manage.py migrate`) once, in the workspace root. Runs after
+            // the clone in the same detached chain.
+            if let Some(pc) = &db.post_clone {
+                let pc = pc
+                    .replace("{n}", &number.to_string())
+                    .replace("{stem}", &cfg.runtime.stem);
+                phases.push(pc);
             }
         }
     }
@@ -624,14 +650,79 @@ fn db_clone_snippet(
             if src == dst {
                 return "true".to_string();
             }
+            // Drop any pre-existing destination DB first. `claim_number` just
+            // reclaimed this workspace slot as free (no live dir/worktree/lock
+            // owns it), so a DB matching the slot's name is by definition an
+            // orphan from a prior workspace — without this, `createdb`/`createdb -T`
+            // both fail on the existing DB, `|| true` swallows it, and the new
+            // workspace silently runs against the OLD workspace's stale data.
             format!(
-                "( createdb -T '{src}' '{dst}' 2>/dev/null \
+                "( dropdb --if-exists '{dst}' 2>/dev/null; \
+                 createdb -T '{src}' '{dst}' 2>/dev/null \
                  || {{ createdb '{dst}' 2>/dev/null && pg_dump '{src}' 2>/dev/null | psql -q '{dst}' 2>/dev/null; }} \
                  || true )"
             )
         })
         .collect();
     Some(format!("{{ {}; wait; }}", clones.join(" & ")))
+}
+
+/// Build a (pre, post) shell pair that stops the SOURCE workspace's dev server
+/// before a DB clone and restarts it after — but only if it was running (so we
+/// never start a server the user had stopped). Returns None when there are no
+/// startable services to bounce. `cw serve` (run with cwd = the source dir)
+/// resolves the source by cwd and handles per-service stop/start; degrades to a
+/// no-op (`|| true`) if `cw` isn't on PATH in the detached setup shell.
+fn source_bounce(cfg: &Config, src_number: u32) -> Option<(String, String)> {
+    let root = cfg.runtime.repo_root.as_deref()?;
+    let src_dir = if src_number == 0 {
+        root.to_path_buf()
+    } else {
+        root.parent()?
+            .join(format!("{}_{}", cfg.runtime.stem, src_number))
+    };
+    // Source pid files for the running-check: a service is "running" if its pid
+    // file exists and names a live process.
+    let mut pid_files: Vec<String> = Vec::new();
+    for svc in &cfg.services {
+        let Some(port_cfg) = &svc.port else { continue };
+        if svc.start.is_none() {
+            continue;
+        }
+        let port = u16::try_from(u32::from(port_cfg.base).saturating_add(src_number)).ok()?;
+        let pf = crate::serve::expand_template(
+            svc.pid_file
+                .as_deref()
+                .unwrap_or("/tmp/{stem}_{n}_{svc}.pid"),
+            &cfg.runtime.stem,
+            src_number,
+            port,
+            &[("svc", &svc.name)],
+        );
+        pid_files.push(pf);
+    }
+    if pid_files.is_empty() {
+        return None;
+    }
+    let src_q = shell_quote(&src_dir.display().to_string());
+    let checks: String = pid_files
+        .iter()
+        .map(|pf| {
+            format!(
+                "if [ -f {pf} ] && kill -0 \"$(cat {pf} 2>/dev/null)\" 2>/dev/null; then __cw_src_running=1; fi",
+                pf = shell_quote(pf)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let pre = format!(
+        "__cw_src_running=0; {checks}; \
+         [ \"$__cw_src_running\" = 1 ] && ( cd {src_q} && cw serve stop ) >/dev/null 2>&1 || true"
+    );
+    let post = format!(
+        "[ \"$__cw_src_running\" = 1 ] && ( cd {src_q} && cw serve start ) >/dev/null 2>&1 || true"
+    );
+    Some((pre, post))
 }
 
 pub(crate) fn autodetect_dep_installs(root: &Path) -> Vec<String> {
@@ -660,7 +751,7 @@ pub(crate) fn autodetect_dep_installs(root: &Path) -> Vec<String> {
     out
 }
 
-fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(iter) = std::fs::read_dir(root) else {
         return Vec::new();
     };

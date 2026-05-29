@@ -19,6 +19,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
         stack,
         pr,
         cont,
+        base,
         positional,
     } = parse(rest)?;
 
@@ -164,21 +165,6 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                 }
             }
 
-            let r = create::create(
-                &cfg,
-                &cwd,
-                create::CreateOpts {
-                    subject,
-                    stack: flags.stack,
-                    parent: None,
-                },
-            )?;
-            let resolved = resolve::Resolved {
-                dir: r.dir,
-                number: Some(r.number),
-                branch: Some(r.branch),
-                pr: None,
-            };
             let launch_prompt = if verbatim_branch_entry {
                 None
             } else if is_description_create {
@@ -186,13 +172,78 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
             } else {
                 flags.prompt.clone()
             };
+
+            let created = create::create(
+                &cfg,
+                &cwd,
+                create::CreateOpts {
+                    subject,
+                    stack: flags.stack,
+                    parent: base,
+                },
+            );
+            let r = match created {
+                Ok(r) => r,
+                Err(e) => {
+                    // C4: the branch is already checked out in another worktree
+                    // (e.g. mid-rebase, so the stack pre-empt above missed it via
+                    // stale ancestry). Switch into that worktree with --continue
+                    // instead of failing with a raw `git worktree add` error —
+                    // mirrors the original's rc-2 → --continue recovery.
+                    if is_busy_worktree_error(&format!("{e:#}")) {
+                        if let Ok(r) = resolve::resolve(&cfg, &cwd, Some(&prospective_branch)) {
+                            emitter.emit(Record::Msg(&format!(
+                                "Branch {prospective_branch} already in use by {} (may be mid-rebase) — switching there",
+                                r.dir.display()
+                            )));
+                            let pr_override = flags
+                                .pr_override
+                                .or(create_from_pr.as_ref().map(|t| t.number));
+                            return enter_workspace(
+                                &cfg,
+                                r,
+                                LaunchFlags {
+                                    continue_session: true,
+                                    pr_override,
+                                    prompt: launch_prompt,
+                                    ..flags
+                                },
+                                emitter,
+                                false,
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
+            };
+
+            // F3: entering an EXISTING branch that wasn't checked out anywhere
+            // (so we just created a fresh worktree for it) — resume its linked
+            // PR's Claude session, matching the original `gh pr list --head`
+            // lookup. New description-slugs have no PR yet, so this is a no-op there.
+            let resumed_pr = if verbatim_branch_entry {
+                cfg.runtime
+                    .repo_root
+                    .as_deref()
+                    .and_then(|root| github::pr_for_branch(root, &r.branch))
+            } else {
+                None
+            };
+
+            let resolved = resolve::Resolved {
+                dir: r.dir,
+                number: Some(r.number),
+                branch: Some(r.branch),
+                pr: None,
+            };
             enter_workspace(
                 &cfg,
                 resolved,
                 LaunchFlags {
                     pr_override: flags
                         .pr_override
-                        .or(create_from_pr.as_ref().map(|target| target.number)),
+                        .or(create_from_pr.as_ref().map(|target| target.number))
+                        .or(resumed_pr),
                     prompt: launch_prompt,
                     ..flags
                 },
@@ -344,6 +395,7 @@ struct Parsed {
     stack: bool,
     pr: Option<u32>,
     cont: bool,
+    base: Option<String>,
     positional: Vec<String>,
 }
 
@@ -351,6 +403,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
     let mut stack = false;
     let mut pr: Option<u32> = None;
     let mut cont = false;
+    let mut base: Option<String> = None;
     let mut positional = Vec::new();
     let mut iter = args.into_iter();
     while let Some(a) = iter.next() {
@@ -365,6 +418,12 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
                     .context("--pr expects a number")?;
                 pr = Some(n);
             }
+            // Branch a new workspace off an arbitrary base (a release branch, a
+            // teammate's branch, a swarm foundation) instead of the autodetected
+            // trunk. Mirrors new-workspace.sh's `--base`.
+            "--base" => {
+                base = Some(iter.next().context("--base requires a branch name")?);
+            }
             "--" => positional.extend(iter.by_ref()),
             _ => positional.push(a),
         }
@@ -373,6 +432,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
         stack,
         pr,
         cont,
+        base,
         positional,
     })
 }
@@ -401,13 +461,22 @@ fn enter_workspace(
             .direnv
             .unwrap_or_else(|| crate::util::in_path("direnv"));
         if direnv {
-            let envrc = r.dir.join(".envrc");
-            if envrc.is_file() {
-                emitter.emit(Record::Exec(&[
-                    "direnv".into(),
-                    "allow".into(),
-                    envrc.to_string_lossy().into_owned(),
-                ]));
+            // Allow the root .envrc AND any top-level subdir .envrc (a monorepo
+            // subproject often ships its own). The original allowed a nested
+            // `hanaq/.envrc`; generalized here to every top-level subdir so we
+            // don't trip direnv's "blocked" prompt on first entry.
+            let mut envrcs = vec![r.dir.join(".envrc")];
+            for sub in create::top_level_dirs(&r.dir) {
+                envrcs.push(sub.join(".envrc"));
+            }
+            for envrc in envrcs {
+                if envrc.is_file() {
+                    emitter.emit(Record::Exec(&[
+                        "direnv".into(),
+                        "allow".into(),
+                        envrc.to_string_lossy().into_owned(),
+                    ]));
+                }
             }
         }
     }
@@ -445,7 +514,11 @@ fn enter_workspace(
                 .graphite
                 .unwrap_or_else(|| crate::util::in_path("gt"));
             let inner = if graphite {
-                "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
+                // No `--force`: re-entry restack runs on an actively-worked
+                // branch that likely has un-pushed local commits; forcing would
+                // reset them to origin (T1.2 — the original only forced on a
+                // freshly-created `--first` workspace, never on normal re-entry).
+                "gt get </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
                  || git rebase --abort >/dev/null 2>&1 || true"
                     .to_string()
             } else {
@@ -507,11 +580,15 @@ fn compose_editor_launch(
         argv.push("--continue".into());
     }
     if let Some(n) = pr {
-        // --name is keyed to the PR session only (matches the original, which
-        // derived the session name from the PR, not the branch).
-        if let Some(branch) = &r.branch {
-            argv.push("--name".into());
-            argv.push(branch.clone());
+        // PR-keyed session name like the original (`#<num> …`), kept scannable
+        // across many sessions. We append the branch (already in hand, no extra
+        // gh call) for description; the original appended the PR title from an
+        // external cache — `#<num> <branch>` serves the same "which PR is this"
+        // purpose without a network round-trip on every launch.
+        argv.push("--name".into());
+        match &r.branch {
+            Some(branch) => argv.push(format!("#{n} {branch}")),
+            None => argv.push(format!("#{n}")),
         }
         argv.push("--from-pr".into());
         argv.push(n.to_string());
@@ -565,6 +642,7 @@ fn print_json(r: &resolve::Resolved) {
 fn print_help() {
     eprintln!("usage: cw <description|N|PR#|branch> [prompt...]");
     eprintln!("       cw -s <description>                  # stack on current branch");
+    eprintln!("       cw --base <branch> <description>     # branch off an arbitrary base");
     eprintln!("       cw <N> --continue                    # resume Claude session");
     eprintln!("       cw <N> --pr <N>                      # force PR association");
 }
@@ -646,7 +724,7 @@ mod launch_tests {
             Some(vec![
                 "claude".into(),
                 "--name".into(),
-                "feat".into(),
+                "#7543 feat".into(),
                 "--from-pr".into(),
                 "7543".into()
             ])
@@ -684,7 +762,7 @@ mod launch_tests {
             Some(vec![
                 "claude".into(),
                 "--name".into(),
-                "feat".into(),
+                "#42 feat".into(),
                 "--from-pr".into(),
                 "42".into()
             ])
@@ -716,7 +794,7 @@ mod launch_tests {
                 "claude".into(),
                 "--continue".into(),
                 "--name".into(),
-                "feat".into(),
+                "#9 feat".into(),
                 "--from-pr".into(),
                 "9".into(),
                 "review".into()
@@ -748,4 +826,10 @@ fn shell_quote(s: &str) -> String {
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
+}
+
+/// True if a `git worktree add` failure was because the branch is already
+/// checked out in another worktree (git: "is already used by worktree at ...").
+fn is_busy_worktree_error(err: &str) -> bool {
+    err.contains("already used by worktree")
 }
