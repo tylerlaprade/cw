@@ -294,7 +294,7 @@ fn do_list() -> Result<()> {
             .number
             .map(|n| n.to_string())
             .unwrap_or_else(|| "-".into());
-        let branch = e.branch.clone().unwrap_or_else(|| "(detached)".into());
+        let branch = e.branch.as_deref().unwrap_or("(detached)");
         let dir = e
             .dir
             .file_name()
@@ -319,7 +319,7 @@ fn do_list() -> Result<()> {
         println!(
             "{:>3}  {:<30}  {:<22}  {}",
             n,
-            truncate(&branch, 30),
+            truncate(branch, 30),
             dir,
             flags.join(", ")
         );

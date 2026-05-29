@@ -108,12 +108,14 @@ pub fn status(ctx: &Ctx) -> Status {
 }
 
 pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
-    if let Status::Running(pid) = status(ctx) {
-        anyhow::bail!("already running (pid {})", pid);
+    match status(ctx) {
+        Status::Running(pid) => anyhow::bail!("already running (pid {})", pid),
+        // A dead PID's file is stale — clear it so the claim below can succeed.
+        Status::StalePid(_) => {
+            let _ = std::fs::remove_file(&ctx.pid_file);
+        }
+        Status::Stopped => {}
     }
-
-    // Clean up stale PID file if present.
-    let _ = std::fs::remove_file(&ctx.pid_file);
 
     ensure_parent(&ctx.log_file)?;
     ensure_parent(&ctx.pid_file)?;
@@ -165,6 +167,21 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
         .with_context(|| format!("opening {}", ctx.log_file.display()))?;
     let log_stderr = log.try_clone()?;
 
+    // Atomically claim the PID file right before spawning: concurrent starts
+    // can both pass status() above, but only one wins create_new — closing the
+    // double-start race. The real PID overwrites this placeholder after spawn.
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ctx.pid_file)
+    {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("another start is already in progress");
+        }
+        Err(e) => return Err(e).with_context(|| format!("claiming {}", ctx.pid_file.display())),
+    }
+
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(&shell_cmd)
@@ -183,9 +200,14 @@ pub fn start(ctx: &Ctx, no_ai: bool) -> Result<u32> {
             Ok(())
         });
     }
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("spawning service in {}", ctx.cwd.display()))?;
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // Release the claim so a retry isn't blocked by our placeholder.
+            let _ = std::fs::remove_file(&ctx.pid_file);
+            return Err(e).with_context(|| format!("spawning service in {}", ctx.cwd.display()));
+        }
+    };
     let pid = child.id();
     std::fs::write(&ctx.pid_file, format!("{pid}\n"))
         .with_context(|| format!("writing {}", ctx.pid_file.display()))?;
@@ -198,7 +220,10 @@ pub fn stop(ctx: &Ctx) -> &'static str {
     let mut killed_any = false;
 
     if let Some(pid) = pid_from_file(&ctx.pid_file) {
-        if pid_alive(pid) {
+        // Only signal the recorded PID if it's alive AND still our service
+        // (owns the port). After our server dies the PID can be reused by an
+        // unrelated process; the port-bound fallbacks below cover the rest.
+        if pid_alive(pid) && pid_owns_port(pid, ctx.port) {
             let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
             if wait_for_exit(pid, 20, 250) {
                 killed_any = true;
@@ -246,6 +271,21 @@ pub fn stop(ctx: &Ctx) -> &'static str {
 fn pid_alive(pid: u32) -> bool {
     // signal 0 = existence check, no signal delivered
     kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+/// True if `pid` is among the processes listening on `port` (`lsof -ti:port`).
+/// Used to confirm a recorded PID is still our service before killing it.
+fn pid_owns_port(pid: u32, port: u16) -> bool {
+    let out = Command::new("lsof")
+        .args(["-ti", &format!(":{port}")])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .any(|p| p == pid),
+        _ => false,
+    }
 }
 
 fn wait_for_exit(pid: u32, tries: u32, pause_ms: u64) -> bool {
