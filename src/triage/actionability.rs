@@ -21,6 +21,22 @@ fn is_bot(login: &str) -> bool {
     BOT_PATTERNS.iter().any(|p| l.contains(p))
 }
 
+/// One piece of verbose feedback to display: a review-thread comment or an
+/// unanswered PR/review-level comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    Thread,
+    Comment,
+}
+
+#[derive(Debug, Clone)]
+pub struct Detail {
+    pub kind: DetailKind,
+    pub author: String,
+    pub body: String,
+    pub time: String,
+}
+
 /// Per-PR review feedback derived from the GraphQL payload.
 #[derive(Debug, Clone, Default)]
 pub struct PrFeedback {
@@ -29,6 +45,8 @@ pub struct PrFeedback {
     pub unanswered_authors: Vec<String>,
     /// Logins whose latest review state is CHANGES_REQUESTED.
     pub change_requesters: Vec<String>,
+    /// Verbose-only: the feedback bodies to render (empty otherwise).
+    pub details: Vec<Detail>,
 }
 
 /// A PR that needs attention, with its computed issue list.
@@ -39,6 +57,8 @@ pub struct ActionablePr {
     pub issues: Vec<String>,
     /// (check name, details URL) for failed checks — used by verbose rendering.
     pub failed_checks: Vec<(String, String)>,
+    /// Verbose-only feedback detail (thread + unanswered comment bodies).
+    pub details: Vec<Detail>,
 }
 
 fn node_list<'a>(v: &'a Value, key: &str) -> impl Iterator<Item = &'a Value> {
@@ -61,9 +81,11 @@ fn created_at(v: &Value) -> &str {
     v.get("createdAt").and_then(|c| c.as_str()).unwrap_or("")
 }
 
-/// Derive feedback for one PR from its GraphQL `pullRequest` node.
-pub fn compute_feedback(node: &Value) -> PrFeedback {
+/// Derive feedback for one PR from its GraphQL `pullRequest` node. When
+/// `verbose`, also collect comment/thread bodies (`details`) for rendering.
+pub fn compute_feedback(node: &Value, verbose: bool) -> PrFeedback {
     let my_login = login_at(node, "author");
+    let mut details: Vec<Detail> = Vec::new();
 
     let mut unresolved_threads = 0usize;
     for t in node_list(node, "reviewThreads") {
@@ -75,8 +97,45 @@ pub fn compute_feedback(node: &Value) -> PrFeedback {
             .get("isOutdated")
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
-        if !resolved && !outdated {
-            unresolved_threads += 1;
+        if resolved || outdated {
+            continue;
+        }
+        unresolved_threads += 1;
+        if verbose {
+            // Collect this thread's non-bot comments, then window to those after
+            // my second-to-last own comment (the relevant tail of a long thread).
+            let comments: Vec<(String, String, String)> = node_list(t, "comments")
+                .filter_map(|c| {
+                    let login = login_at(c, "author");
+                    if is_bot(login) {
+                        return None;
+                    }
+                    let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("").trim();
+                    Some((login.to_string(), body.to_string(), created_at(c).to_string()))
+                })
+                .collect();
+            let my_idx: Vec<usize> = comments
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.0 == my_login)
+                .map(|(i, _)| i)
+                .collect();
+            let start = if my_idx.len() >= 2 {
+                my_idx[my_idx.len() - 2] + 1
+            } else {
+                0
+            };
+            for (author, body, time) in comments.into_iter().skip(start) {
+                if body.is_empty() {
+                    continue;
+                }
+                details.push(Detail {
+                    kind: DetailKind::Thread,
+                    author,
+                    body,
+                    time,
+                });
+            }
         }
     }
 
@@ -108,6 +167,17 @@ pub fn compute_feedback(node: &Value) -> PrFeedback {
             && created_at(c) > my_last
         {
             unanswered_authors.push(login.to_string());
+            if verbose {
+                let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("").trim();
+                if !body.is_empty() {
+                    details.push(Detail {
+                        kind: DetailKind::Comment,
+                        author: login.to_string(),
+                        body: body.to_string(),
+                        time: created_at(c).to_string(),
+                    });
+                }
+            }
         }
     }
     for r in node_list(node, "reviews") {
@@ -115,6 +185,14 @@ pub fn compute_feedback(node: &Value) -> PrFeedback {
         let login = login_at(r, "author");
         if !body.is_empty() && login != my_login && !is_bot(login) && created_at(r) > my_last {
             unanswered_authors.push(login.to_string());
+            if verbose {
+                details.push(Detail {
+                    kind: DetailKind::Comment,
+                    author: login.to_string(),
+                    body: body.to_string(),
+                    time: created_at(r).to_string(),
+                });
+            }
         }
     }
 
@@ -137,6 +215,7 @@ pub fn compute_feedback(node: &Value) -> PrFeedback {
         unresolved_threads,
         unanswered_authors,
         change_requesters,
+        details,
     }
 }
 
@@ -215,6 +294,7 @@ pub fn classify(pr: &Pr, fb: &PrFeedback, required: &HashSet<String>) -> Option<
         title: pr.title.clone(),
         issues,
         failed_checks: failed,
+        details: fb.details.clone(),
     })
 }
 
@@ -224,6 +304,7 @@ pub fn actionable_prs(
     prs: &[Pr],
     feedback: &Value,
     required: &HashSet<String>,
+    verbose: bool,
 ) -> Vec<ActionablePr> {
     let data = feedback.get("data");
     let mut out: Vec<ActionablePr> = prs
@@ -233,7 +314,7 @@ pub fn actionable_prs(
                 .and_then(|d| d.get(format!("pr{}", pr.number)))
                 .and_then(|w| w.get("pullRequest"));
             let fb = match node {
-                Some(n) if !n.is_null() => compute_feedback(n),
+                Some(n) if !n.is_null() => compute_feedback(n, verbose),
                 _ => PrFeedback::default(),
             };
             classify(pr, &fb, required)
@@ -300,6 +381,7 @@ mod tests {
             unresolved_threads: 2,
             unanswered_authors: vec!["alice".into()],
             change_requesters: vec![],
+            details: vec![],
         };
         let a = classify(&pr(), &fb, &HashSet::new()).unwrap();
         assert_eq!(a.issues, vec!["3 unresolved"]);
@@ -315,6 +397,7 @@ mod tests {
             unresolved_threads: 1,
             unanswered_authors: vec!["bob".into()],
             change_requesters: vec!["bob".into()],
+            details: vec![],
         };
         let a = classify(&p, &fb, &HashSet::new()).unwrap();
         assert_eq!(a.issues, vec!["changes requested"]);
@@ -334,6 +417,7 @@ mod tests {
             unresolved_threads: 0,
             unanswered_authors: vec!["bob".into()],
             change_requesters: vec!["bob".into()],
+            details: vec![],
         };
         assert!(classify(&p, &fb, &HashSet::new()).is_none());
     }
@@ -357,7 +441,7 @@ mod tests {
             ]},
             "timelineItems": {"nodes": []}
         });
-        let fb = compute_feedback(&node);
+        let fb = compute_feedback(&node, false);
         assert_eq!(fb.unresolved_threads, 1);
         // rev's review (after my last activity) + rev's later comment → 2.
         assert_eq!(fb.unanswered_authors.len(), 2);
@@ -377,7 +461,7 @@ mod tests {
             ]},
             "timelineItems": {"nodes": []}
         });
-        let fb = compute_feedback(&node);
+        let fb = compute_feedback(&node, false);
         assert!(fb.unanswered_authors.is_empty());
     }
 }

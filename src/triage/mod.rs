@@ -21,11 +21,24 @@ pub fn run(args: TriageArgs) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("not inside a git repo"))?;
     let base = cfg.runtime.base_branch.clone();
 
-    // Prefer ticket keys from the current branch's PR description, and fall
-    // back to the branch name when there is no PR body signal.
-    let project = current_pr_project(root)
+    // A configured `[triage] jira_project` wins (a branch-independent personal
+    // dashboard, like the original's fixed project); otherwise derive the key
+    // from the current branch's PR description, then the branch name.
+    let project = cfg
+        .triage
+        .jira_project
+        .clone()
+        .or_else(|| current_pr_project(root))
         .or_else(|| current_branch_prefix(root))
         .unwrap_or_default();
+
+    // Statuses to surface: configured, else generic Jira built-ins (the
+    // original's company-custom "Failed QA"/"To Do" returned nothing elsewhere).
+    let statuses = if cfg.triage.jira_statuses.is_empty() {
+        vec!["To Do".to_string(), "In Progress".to_string()]
+    } else {
+        cfg.triage.jira_statuses.clone()
+    };
 
     // Fan out: PRs and tickets in parallel. Keep the raw join results so a
     // panicking worker degrades to an error line instead of aborting triage.
@@ -35,7 +48,7 @@ pub fn run(args: TriageArgs) -> Result<()> {
             if project.is_empty() {
                 Ok::<Vec<jira::Ticket>, anyhow::Error>(Vec::new())
             } else {
-                jira::my_actionable_tickets(&project)
+                jira::my_actionable_tickets(&project, &statuses)
             }
         });
         (p.join(), t.join())
@@ -67,20 +80,24 @@ pub fn run(args: TriageArgs) -> Result<()> {
     // Sort tickets by key (matching the original `tickets.sort()`).
     tickets.sort_by(|a, b| a.key.cmp(&b.key));
 
+    // owner/repo backs both the feedback query and the PR hyperlinks in render.
+    let owner_repo = gh::repo_owner_name(root);
+
     // Classify PRs into actionable issues. Needs branch-protection required
     // checks + the GraphQL review-feedback payload, both keyed by owner/repo.
+    // In --verbose, the feedback query also pulls comment/review bodies.
     let actionable = if prs.is_empty() {
         Vec::new()
     } else {
         let numbers: Vec<u32> = prs.iter().map(|p| p.number).collect();
-        let (required, feedback) = match gh::repo_owner_name(root) {
+        let (required, feedback) = match &owner_repo {
             Some((owner, repo)) => (
-                gh::fetch_required_checks(root, &owner, &repo, &base),
-                gh::fetch_feedback(root, &owner, &repo, &numbers),
+                gh::fetch_required_checks(root, owner, repo, &base),
+                gh::fetch_feedback(root, owner, repo, &numbers, args.verbose),
             ),
             None => (std::collections::HashSet::new(), serde_json::json!({})),
         };
-        actionability::actionable_prs(&prs, &feedback, &required)
+        actionability::actionable_prs(&prs, &feedback, &required, args.verbose)
     };
 
     if !errors.is_empty() {
@@ -96,7 +113,14 @@ pub fn run(args: TriageArgs) -> Result<()> {
         }
     }
 
-    render::render(&actionable, &tickets, args.verbose, terminal::columns());
+    render::render(
+        &actionable,
+        &tickets,
+        args.verbose,
+        terminal::columns(),
+        owner_repo.as_ref(),
+        cfg.triage.jira_site.as_deref(),
+    );
     Ok(())
 }
 

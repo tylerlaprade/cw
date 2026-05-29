@@ -10,10 +10,22 @@ pub struct Ticket {
     pub status: String,
 }
 
-pub fn my_actionable_tickets(project: &str) -> Result<Vec<Ticket>> {
-    let jql = format!(
-        r#"project = {project} AND assignee = currentUser() AND status IN ("Failed QA", "To Do")"#
-    );
+pub fn my_actionable_tickets(project: &str, statuses: &[String]) -> Result<Vec<Ticket>> {
+    // Status filter is configurable (`[triage] jira_statuses`): the original
+    // hard-coded a company-custom `("Failed QA", "To Do")`, which silently
+    // returned zero tickets on any board lacking those exact statuses.
+    let status_list = statuses
+        .iter()
+        .map(|s| format!("\"{}\"", s.replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let jql = if status_list.is_empty() {
+        format!("project = {project} AND assignee = currentUser()")
+    } else {
+        format!(
+            "project = {project} AND assignee = currentUser() AND status IN ({status_list})"
+        )
+    };
     let out = Command::new("acli")
         .args([
             "jira",

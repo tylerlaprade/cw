@@ -142,8 +142,20 @@ pub fn fetch_required_checks(
 }
 
 /// Build the GraphQL query fetching review feedback for each PR, aliased as
-/// `pr<number>`. Mirrors format-triage.py's `--query` (non-verbose) mode.
-fn feedback_query(owner: &str, repo: &str, numbers: &[u32]) -> String {
+/// `pr<number>`. Mirrors format-triage.py's `--query`. In `verbose` mode it
+/// also pulls thread comment bodies (last 5) and PR comment bodies, so the
+/// renderer can show the actual feedback text.
+fn feedback_query(owner: &str, repo: &str, numbers: &[u32], verbose: bool) -> String {
+    let thread_comments = if verbose {
+        "comments(last: 5) { nodes { author { login } body createdAt } }"
+    } else {
+        ""
+    };
+    let pr_comment_fields = if verbose {
+        "author { login } body createdAt"
+    } else {
+        "author { login } createdAt"
+    };
     let parts: Vec<String> = numbers
         .iter()
         .map(|n| {
@@ -151,9 +163,9 @@ fn feedback_query(owner: &str, repo: &str, numbers: &[u32]) -> String {
                 "pr{n}: repository(owner: \"{owner}\", name: \"{repo}\") {{ \
                  pullRequest(number: {n}) {{ \
                  author {{ login }} \
-                 reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated }} }} \
+                 reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated {thread_comments} }} }} \
                  reviews(first: 100) {{ nodes {{ state body author {{ login }} createdAt }} }} \
-                 comments(first: 100) {{ nodes {{ author {{ login }} createdAt }} }} \
+                 comments(first: 100) {{ nodes {{ {pr_comment_fields} }} }} \
                  timelineItems(itemTypes: [REVIEW_DISMISSED_EVENT], first: 100) {{ nodes {{ ... on ReviewDismissedEvent {{ createdAt actor {{ login }} }} }} }} \
                  }} }}"
             )
@@ -170,11 +182,12 @@ pub fn fetch_feedback(
     owner: &str,
     repo: &str,
     numbers: &[u32],
+    verbose: bool,
 ) -> serde_json::Value {
     if numbers.is_empty() {
         return serde_json::json!({});
     }
-    let query = feedback_query(owner, repo, numbers);
+    let query = feedback_query(owner, repo, numbers, verbose);
     let out = Command::new("gh")
         .args(["api", "graphql", "-f"])
         .arg(format!("query={query}"))
