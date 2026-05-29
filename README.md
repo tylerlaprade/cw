@@ -32,6 +32,7 @@ cw <description>                         # create workspace, cd in, launch edito
 cw <target>                              # cd into workspace; target = N | PR# | branch
 cw -s <description>                      # stack on current branch (Graphite parent)
 cw --base <branch> <description>         # branch a new workspace off an arbitrary base
+cw --tmp <description>                   # ephemeral workspace in /tmp/{stem}_N
 cw <target> --continue                   # cd + claude --continue
 cw <target> --pr <N>                     # cd + claude --from-pr N
 

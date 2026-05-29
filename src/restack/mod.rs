@@ -134,6 +134,7 @@ fn resolve_or_create(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<r
             subject: branch,
             stack: false,
             parent: None,
+            tmp: false,
         },
     )?;
     Ok(resolve::Resolved {

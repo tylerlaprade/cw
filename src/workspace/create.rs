@@ -61,6 +61,9 @@ pub struct CreateOpts {
     pub stack: bool,
     /// Optional parent override (branch name). When set, overrides `stack`.
     pub parent: Option<String>,
+    /// Place the worktree in `/tmp/{stem}_{n}` instead of beside the repo —
+    /// an ephemeral/throwaway workspace (the original `new-workspace.sh --tmp`).
+    pub tmp: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +116,15 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     // each using its own temp repo.
     let lock_dir = claim_lock_dir(root);
     let (number, _lock) = claim_number(cfg, parent_dir, &lock_dir)?;
-    let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
+    // `--tmp` places the worktree in /tmp (ephemeral/throwaway); otherwise it's
+    // a sibling of the repo. Numbers stay globally unique either way because
+    // scan_used_numbers counts both locations.
+    let base_dir = if opts.tmp {
+        PathBuf::from("/tmp")
+    } else {
+        parent_dir.to_path_buf()
+    };
+    let dir = base_dir.join(format!("{}_{}", cfg.runtime.stem, number));
     let existed = ensure_branch_for_worktree(root, &branch)?;
 
     eprintln!("Creating workspace {number}...");
@@ -234,6 +245,10 @@ fn scan_used_numbers(
     let mut used = BTreeSet::new();
     collect_stem_numbers(parent, stem, &mut used);
     collect_stem_numbers(tmp_dir, stem, &mut used);
+    // Count /tmp/{stem}_{n} workspaces too (the --tmp/swarm location) so numbers
+    // stay globally unique across both placements — matching the original
+    // find_next_number, which scanned both the parent dir and /tmp.
+    collect_stem_numbers(Path::new("/tmp"), stem, &mut used);
     collect_live_lock_numbers(tmp_dir, stem, &mut used);
     if let Some(root) = repo_root {
         collect_worktree_numbers(root, stem, &mut used);
@@ -996,6 +1011,7 @@ mod tests {
                 subject: "feature/foo".into(),
                 stack: false,
                 parent: None,
+                tmp: false,
             },
         )
         .unwrap();

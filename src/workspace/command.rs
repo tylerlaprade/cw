@@ -20,6 +20,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
         pr,
         cont,
         base,
+        tmp,
         positional,
     } = parse(rest)?;
 
@@ -183,6 +184,7 @@ pub fn default_dispatch(rest: Vec<String>, emitter: &mut Emitter) -> Result<()> 
                     subject,
                     stack: flags.stack,
                     parent: base,
+                    tmp,
                 },
             );
             let r = match created {
@@ -415,6 +417,7 @@ struct Parsed {
     pr: Option<u32>,
     cont: bool,
     base: Option<String>,
+    tmp: bool,
     positional: Vec<String>,
 }
 
@@ -423,6 +426,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
     let mut pr: Option<u32> = None;
     let mut cont = false;
     let mut base: Option<String> = None;
+    let mut tmp = false;
     let mut positional = Vec::new();
     let mut iter = args.into_iter();
     while let Some(a) = iter.next() {
@@ -443,6 +447,9 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
             "--base" => {
                 base = Some(iter.next().context("--base requires a branch name")?);
             }
+            // Place the new workspace in /tmp (ephemeral/throwaway), like the
+            // original `new-workspace.sh --tmp`.
+            "--tmp" => tmp = true,
             "--" => positional.extend(iter.by_ref()),
             _ => positional.push(a),
         }
@@ -452,6 +459,7 @@ fn parse(args: Vec<String>) -> Result<Parsed> {
         pr,
         cont,
         base,
+        tmp,
         positional,
     })
 }
@@ -662,6 +670,7 @@ fn print_help() {
     eprintln!("usage: cw <description|N|PR#|branch> [prompt...]");
     eprintln!("       cw -s <description>                  # stack on current branch");
     eprintln!("       cw --base <branch> <description>     # branch off an arbitrary base");
+    eprintln!("       cw --tmp <description>               # ephemeral workspace in /tmp");
     eprintln!("       cw <N> --continue                    # resume Claude session");
     eprintln!("       cw <N> --pr <N>                      # force PR association");
 }
