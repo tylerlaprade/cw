@@ -14,8 +14,10 @@ choice, etc.).
 
 ```sh
 cargo install --path .
-# in your shell init:
-eval "$(cw shell-init zsh)"         # or bash | fish
+# in your shell init (zsh/bash):
+eval "$(cw shell-init zsh)"          # or: eval "$(cw shell-init bash)"
+# fish (different syntax — eval can't read a multi-line function):
+cw shell-init fish | source
 ```
 
 The wrapper installs exactly one shell function (`cw`). `cd`, terminal
@@ -33,19 +35,21 @@ cw <target> --continue                   # cd + claude --continue
 cw <target> --pr <N>                     # cd + claude --from-pr N
 
 cw open [target]                         # start services + open browser
-cw restack [target] [--resolver X]       # rebase with optional hook + resolver
-cw serve <start|stop|restart|status|logs|tail> [target]
+cw restack [target] [--resolver X] [--no-hook]    # rebase with optional hook + resolver
+cw resolve <files...> [--resolver X]     # run the resolver on conflicted files (for hooks)
+cw serve <start|stop|restart|status|logs|tail> [target] [--tail --open --no-ai -n N --service S]
 cw remove <target...> [--force --dry-run --no-close-tab]
 cw cleanup [--dry-run --force]
 cw triage [--verbose]                    # actionable PRs + tickets
 
 cw workspace list
 cw workspace resolve <target> [--json]
+cw workspace next-number                 # print lowest-available workspace number
 
 cw init                                  # scaffold minimal .devcli.toml
 cw shell-init <zsh|bash|fish>
 cw completions <zsh|bash|fish>
-cw config show
+cw config <show|validate>
 cw doctor
 ```
 

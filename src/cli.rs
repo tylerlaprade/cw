@@ -14,7 +14,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Emit the shell-wrapper source for installation via eval.
+    /// Emit the shell-wrapper source. Install with `eval "$(cw shell-init
+    /// zsh)"` (zsh/bash) or `cw shell-init fish | source` (fish).
     ShellInit {
         #[arg(value_enum)]
         shell: Shell,
