@@ -177,7 +177,8 @@ fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(iter) = std::fs::read_dir(root) else {
         return Vec::new();
     };
-    iter.filter_map(|e| e.ok())
+    let mut dirs: Vec<PathBuf> = iter
+        .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
             p.is_dir()
@@ -188,37 +189,28 @@ fn top_level_dirs(root: &Path) -> Vec<PathBuf> {
                     })
                     .unwrap_or(false)
         })
-        .collect()
+        .collect();
+    // Sort for deterministic autodetect — read_dir order is OS-dependent, so
+    // without this the chosen service among multiple candidates could vary.
+    dirs.sort();
+    dirs
 }
 
-/// Does `dir/package.json` define a top-level `scripts.<script>` entry?
-/// Light substring probe (avoids pulling serde_json in for a config sniff).
+/// Does `dir/package.json` define a `scripts.<script>` key? Parses the JSON so
+/// a dependency or value that merely contains the name can't false-positive.
 fn package_has_script(dir: &Path, script: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
         return false;
     };
-    match text.find("\"scripts\"") {
-        Some(idx) => text[idx..].contains(&format!("\"{script}\"")),
-        None => false,
-    }
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("scripts").and_then(|s| s.get(script)).map(|_| ()))
+        .is_some()
 }
 
 fn has_frontend_package(dir: &Path) -> bool {
-    let pkg = dir.join("package.json");
-    if !pkg.is_file() {
-        return false;
-    }
-    let Ok(text) = std::fs::read_to_string(&pkg) else {
-        return false;
-    };
-    // Very light parse: look for "scripts" + ("dev" or "start") keys.
-    // Avoid pulling in serde_json just for this probe.
-    let scripts_idx = text.find("\"scripts\"").unwrap_or(usize::MAX);
-    if scripts_idx == usize::MAX {
-        return false;
-    }
-    let tail = &text[scripts_idx..];
-    tail.contains("\"dev\"") || tail.contains("\"start\"")
+    dir.join("package.json").is_file()
+        && (package_has_script(dir, "dev") || package_has_script(dir, "start"))
 }
 
 /// Look for `.devcli.toml` at `worktree_root`, then at the main worktree.
