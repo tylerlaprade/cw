@@ -264,9 +264,15 @@ run_mode() {
     case_open_target
     case_open_current_workspace
     case_restack_target
-    case_zero_enters_repo_root
-    case_open_zero
-    case_restack_zero
+
+    # `cw 0` → repo root is a cw (Rust) feature; the legacy cw.sh has no such
+    # dispatch (numeric falls through to the PR path), so these cases describe
+    # the Rust-only contract and must not be asserted against legacy.
+    if [[ "$PARITY_IMPL" == "rust" ]]; then
+        case_zero_enters_repo_root
+        case_open_zero
+        case_restack_zero
+    fi
 }
 
 case "$MODE" in

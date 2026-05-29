@@ -71,9 +71,11 @@ fn rust_next_number(repo: &Path) -> u32 {
         .unwrap_or_else(|e| panic!("bad rust output {:?}: {e}", out.stdout))
 }
 
-fn bash_next_number(legacy: &Path, repo: &Path) -> u32 {
-    // The dry-run path in new-workspace.sh exits after computing N but before
-    // any DB / rsync / worktree side effects.
+/// Compute the legacy next-number via new-workspace.sh's dry-run path. Returns
+/// None when the provided legacy copy lacks the `NEW_WORKSPACE_DRY_RUN` hook
+/// (e.g. the upstream script) — running it then would perform real side effects
+/// (createdb / worktree add / rsync), so the caller skips the comparison.
+fn bash_next_number(legacy: &Path, repo: &Path) -> Option<u32> {
     let script = legacy.join("scripts/new-workspace.sh");
     assert!(
         script.is_file(),
@@ -102,6 +104,12 @@ fn bash_next_number(legacy: &Path, repo: &Path) -> u32 {
         fs::set_permissions(scripts.join("new-workspace.sh"), p).unwrap();
     }
 
+    // Guard against running the upstream script (no dry-run) for real.
+    let script_src = fs::read_to_string(scripts.join("new-workspace.sh")).unwrap_or_default();
+    if !script_src.contains("NEW_WORKSPACE_DRY_RUN") {
+        return None;
+    }
+
     let out = Command::new("bash")
         .arg(scripts.join("new-workspace.sh"))
         .arg("parity-test-branch")
@@ -121,7 +129,7 @@ fn bash_next_number(legacy: &Path, repo: &Path) -> u32 {
         if let Some(rest) = line.strip_prefix("DRY_RUN ") {
             for tok in rest.split_whitespace() {
                 if let Some(v) = tok.strip_prefix("N=") {
-                    return v.parse().unwrap();
+                    return Some(v.parse().unwrap());
                 }
             }
         }
@@ -146,7 +154,10 @@ fn rust_and_legacy_agree_on_lowest_gap() {
     fs::create_dir_all(sandbox.path().join("condor_3")).unwrap();
 
     let rust_n = rust_next_number(&repo);
-    let bash_n = bash_next_number(&legacy, &repo);
+    let Some(bash_n) = bash_next_number(&legacy, &repo) else {
+        eprintln!("skipping: legacy new-workspace.sh has no NEW_WORKSPACE_DRY_RUN hook");
+        return;
+    };
     assert_eq!(
         rust_n, bash_n,
         "claim_number / find_next_number disagree (rust={rust_n}, bash={bash_n})"
