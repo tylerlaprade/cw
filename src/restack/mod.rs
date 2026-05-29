@@ -820,5 +820,7 @@ mod tests {
 }
 
 fn graphite_enabled(cfg: &Config) -> bool {
-    cfg.integrations.graphite.unwrap_or_else(|| crate::util::in_path("gt"))
+    cfg.integrations
+        .graphite
+        .unwrap_or_else(|| crate::util::in_path("gt"))
 }

@@ -31,6 +31,7 @@ execute directly via shell arrays.
 cw <description>                         # create workspace, cd in, launch editor with prompt
 cw <target>                              # cd into workspace; target = N | PR# | branch
 cw -s <description>                      # stack on current branch (Graphite parent)
+cw --base <branch> <description>         # branch a new workspace off an arbitrary base
 cw <target> --continue                   # cd + claude --continue
 cw <target> --pr <N>                     # cd + claude --from-pr N
 
@@ -75,12 +76,19 @@ and fall through to PR lookup when no matching worktree exists.
 
 A `.devcli.toml` is only needed when you want to:
 
-- Cap workspace count (e.g. an upstream limit on OAuth callback URLs): `[workspace] max_count`
+- Cap workspace count (also the number-vs-PR threshold; default 99): `[workspace] max_count`
 - Pre-start hooks per service (`[[services]]` with `pre_start` / `start_env`)
-- Clone per-workspace databases: `[databases] pattern`, `suffixes`, `clone`
+- Clone per-workspace databases: `[databases] pattern`, `suffixes`, `clone`,
+  and a `post_clone` command (e.g. migrate the clone up to the branch's schema)
 - Hand off restack customization to a repo-specific hook:
   `[restack] hook = "scripts/cw-restack-hook.sh"` (or drop one at that path
   and it's picked up automatically).
+- Protect long-lived branches from the cleanup sweep + tune its inactivity
+  window: `[cleanup] protected_branches`, `stale_hours` (the base branch is
+  always protected; no branch names are hard-coded)
+- Triage tuning: `[triage] jira_statuses`, `jira_project` (branch-independent
+  ticket dashboard), `jira_site` (clickable Jira keys)
+- Merge Claude Code memories across worktrees: `[claude] memory_merge`
 - Post-create / pre-remove hooks: `[hooks]`
 - Explicit env strip/inject rules: `[env]`
 

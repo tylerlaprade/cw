@@ -143,8 +143,11 @@ fn gt_stack_contains(dir: &Path, target: &str) -> bool {
             // original's `awk '{...first /^[A-Za-z0-9]/ token...}'`.
             .lines()
             .filter_map(|line| {
-                line.split_whitespace()
-                    .find(|tok| tok.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()))
+                line.split_whitespace().find(|tok| {
+                    tok.chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric())
+                })
             })
             .any(|tok| tok == target),
         _ => false,

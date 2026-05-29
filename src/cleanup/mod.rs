@@ -149,7 +149,11 @@ fn prune_branches(root: &Path, base: &str, protected: &HashSet<String>, dry_run:
         return;
     }
     if dry_run {
-        println!("{} would delete {} stale branch(es):", "·".dimmed(), to_delete.len());
+        println!(
+            "{} would delete {} stale branch(es):",
+            "·".dimmed(),
+            to_delete.len()
+        );
         for b in &to_delete {
             println!("    {}", b);
         }

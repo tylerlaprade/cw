@@ -22,9 +22,7 @@ pub fn my_actionable_tickets(project: &str, statuses: &[String]) -> Result<Vec<T
     let jql = if status_list.is_empty() {
         format!("project = {project} AND assignee = currentUser()")
     } else {
-        format!(
-            "project = {project} AND assignee = currentUser() AND status IN ({status_list})"
-        )
+        format!("project = {project} AND assignee = currentUser() AND status IN ({status_list})")
     };
     let out = Command::new("acli")
         .args([

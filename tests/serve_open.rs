@@ -58,7 +58,9 @@ fn serve_open_waits_for_frontend_port() {
     // Needs python3 (the mock dev server) + nc (the mock `open` readiness probe)
     // in the sandboxed PATH; skip rather than fail where they're absent.
     if !bin_in(&["/usr/bin", "/bin"], "python3") || !bin_in(&["/usr/bin", "/bin"], "nc") {
-        eprintln!("skipping serve_open_waits_for_frontend_port: needs python3 + nc in /usr/bin:/bin");
+        eprintln!(
+            "skipping serve_open_waits_for_frontend_port: needs python3 + nc in /usr/bin:/bin"
+        );
         return;
     }
     let tmp = TempDir::new().unwrap();

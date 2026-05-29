@@ -31,9 +31,10 @@ pub fn render(
             // width so the escape sequences don't throw off alignment.
             let plain = format!("#{}", pr.number);
             let cell = match owner_repo {
-                Some((o, r)) => {
-                    hyperlink(&format!("https://github.com/{o}/{r}/pull/{}", pr.number), &plain)
-                }
+                Some((o, r)) => hyperlink(
+                    &format!("https://github.com/{o}/{r}/pull/{}", pr.number),
+                    &plain,
+                ),
                 None => plain.clone(),
             };
             let pad = " ".repeat(6usize.saturating_sub(plain.chars().count()));
@@ -107,7 +108,12 @@ fn render_pr_verbose(pr: &ActionablePr) {
         };
         match d.kind {
             DetailKind::Thread => {
-                println!("        {} {}{}", "│".dimmed(), d.author.bold(), suffix.dimmed());
+                println!(
+                    "        {} {}{}",
+                    "│".dimmed(),
+                    d.author.bold(),
+                    suffix.dimmed()
+                );
                 for line in body.lines() {
                     println!("        {}   {}", "│".dimmed(), line);
                 }
@@ -144,9 +150,9 @@ fn color_issues(issues: &[String]) -> String {
         .join(", ")
 }
 
-static RE_SUGGEST: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)```suggestion\n.*?```").unwrap());
-static RE_FOOTER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)\*Spotted by \[Graphite.*$").unwrap());
+static RE_SUGGEST: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)```suggestion\n.*?```").unwrap());
+static RE_FOOTER: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)\*Spotted by \[Graphite.*$").unwrap());
 static RE_HTML: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
 static RE_BLANKS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
 

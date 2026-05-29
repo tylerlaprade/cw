@@ -213,7 +213,10 @@ mod tests {
     #[test]
     fn encode_path_dashes_separators() {
         // Matches the verified Claude encoding for a {stem}_{n} worktree path.
-        assert_eq!(encode_path(Path::new("/Users/t/Code/cw")), "-Users-t-Code-cw");
+        assert_eq!(
+            encode_path(Path::new("/Users/t/Code/cw")),
+            "-Users-t-Code-cw"
+        );
         assert_eq!(
             encode_path(Path::new("/Users/t/Code/cw_2")),
             "-Users-t-Code-cw-2"

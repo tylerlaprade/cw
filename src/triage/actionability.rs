@@ -111,7 +111,11 @@ pub fn compute_feedback(node: &Value, verbose: bool) -> PrFeedback {
                         return None;
                     }
                     let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("").trim();
-                    Some((login.to_string(), body.to_string(), created_at(c).to_string()))
+                    Some((
+                        login.to_string(),
+                        body.to_string(),
+                        created_at(c).to_string(),
+                    ))
                 })
                 .collect();
             let my_idx: Vec<usize> = comments

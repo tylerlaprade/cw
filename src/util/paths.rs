@@ -11,7 +11,10 @@
 /// `detect_workspace_number`.
 pub fn detect_number(path: &std::path::Path, stem: &str) -> Option<u32> {
     let name = path.file_name()?.to_str()?;
-    let n = name.strip_prefix(&format!("{stem}_"))?.parse::<u32>().ok()?;
+    let n = name
+        .strip_prefix(&format!("{stem}_"))?
+        .parse::<u32>()
+        .ok()?;
     // `{stem}_0` is not a workspace: 0 is reserved for the main worktree (decided
     // by path-equality, not by name), and cw never allocates it. Mirrors the
     // original's `-gt 0` guard.
