@@ -4,7 +4,7 @@
 /// - lowercase
 /// - non-alphanumeric runs collapse to `-`
 /// - leading/trailing `-` trimmed
-/// - capped at 50 chars on a word boundary when possible
+/// - hard-capped at 50 chars (matching Bash `cut -c1-50`), trailing `-` trimmed
 pub fn slugify(s: &str) -> String {
     let lower = s.to_lowercase();
     let mut out = String::with_capacity(lower.len());
@@ -25,8 +25,12 @@ pub fn slugify(s: &str) -> String {
         out.remove(0);
     }
     if out.len() > 50 {
-        let cut = out[..50].rfind('-').unwrap_or(50);
-        out.truncate(cut);
+        // Hard cut at 50 (slug is ASCII, so byte == char), matching the
+        // original `cut -c1-50`; then drop a dash left dangling at the edge.
+        out.truncate(50);
+        while out.ends_with('-') {
+            out.pop();
+        }
     }
     out
 }

@@ -1,14 +1,17 @@
 //! Workspace-number detection from a path. The pattern is always
-//! `{stem}_{n}` as a path component.
+//! `{stem}_{n}` as the final path component.
 
-use regex::Regex;
-
-/// Extract the workspace number from a path whose final component is
-/// `{stem}_{N}`. Returns None if no match.
+/// Extract the workspace number from a path whose **final** component is
+/// `{stem}_{N}`. Returns None otherwise.
+///
+/// Only the leaf component is inspected — matching `{stem}_{N}` anywhere in the
+/// path (as a prior version did) mis-detects when a non-workspace dir sits
+/// under a `{stem}_{N}` ancestor, and a leftmost regex match would pick the
+/// outer workspace over the real one. This mirrors the original
+/// `detect_workspace_number`.
 pub fn detect_number(path: &std::path::Path, stem: &str) -> Option<u32> {
-    let re = Regex::new(&format!(r"(?:^|/){}_(\d+)(?:/|$)", regex::escape(stem))).ok()?;
-    let s = path.to_string_lossy();
-    re.captures(&s)?.get(1)?.as_str().parse::<u32>().ok()
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix(&format!("{stem}_"))?.parse::<u32>().ok()
 }
 
 #[cfg(test)]
@@ -25,9 +28,12 @@ mod tests {
     }
 
     #[test]
-    fn detects_middle_n() {
+    fn ignores_non_leaf_n() {
+        // Only the final component counts: a subdir under app_15 is not app_15.
+        assert_eq!(detect_number(Path::new("/tmp/app_15/web/src"), "app"), None);
+        // Leaf wins over an outer match (no false outer-workspace detection).
         assert_eq!(
-            detect_number(Path::new("/tmp/app_15/web/src"), "app"),
+            detect_number(Path::new("/tmp/app_2/app_15"), "app"),
             Some(15)
         );
     }
