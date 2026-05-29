@@ -34,6 +34,11 @@ pub struct WorkspaceCfg {
     pub base_branch: Option<String>,
     /// Override auto-detected stem (default: repo-root basename).
     pub stem: Option<String>,
+    /// Background-restack a workspace onto base every time you re-enter it.
+    /// Off by default: it rewrites local history in the background, which can
+    /// surprise (force-push needed afterward). Opt in with `auto_restack = true`.
+    #[serde(default)]
+    pub auto_restack: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

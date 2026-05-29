@@ -420,27 +420,31 @@ fn enter_workspace(
         // K2: background-restack the workspace onto base on re-entry, like the
         // original bg_restack — non-interactive and ABORT-ON-CONFLICT, so it
         // never leaves the worktree mid-rebase (a manual `cw restack` resolves).
-        let graphite = cfg
-            .integrations
-            .graphite
-            .unwrap_or_else(|| crate::util::in_path("gt"));
-        let inner = if graphite {
-            "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
-             || git rebase --abort >/dev/null 2>&1 || true"
-                .to_string()
-        } else {
-            format!(
-                "git fetch origin >/dev/null 2>&1; \
-                 git rebase origin/{base} </dev/null >/dev/null 2>&1 \
-                 || git rebase --abort >/dev/null 2>&1 || true",
-                base = cfg.runtime.base_branch
-            )
-        };
-        let cmd = format!(
-            "cd {} && {{ {inner}; }}",
-            shell_quote(&r.dir.to_string_lossy())
-        );
-        emitter.emit(Record::ExecBg(&["bash".into(), "-c".into(), cmd]));
+        // Opt-in: it rewrites local history in the background, which surprises
+        // (force-push needed after). Enable with `[workspace] auto_restack = true`.
+        if cfg.workspace.auto_restack {
+            let graphite = cfg
+                .integrations
+                .graphite
+                .unwrap_or_else(|| crate::util::in_path("gt"));
+            let inner = if graphite {
+                "gt get --force </dev/null >/dev/null 2>&1 && gt r --quiet </dev/null 2>&1 \
+                 || git rebase --abort >/dev/null 2>&1 || true"
+                    .to_string()
+            } else {
+                format!(
+                    "git fetch origin >/dev/null 2>&1; \
+                     git rebase origin/{base} </dev/null >/dev/null 2>&1 \
+                     || git rebase --abort >/dev/null 2>&1 || true",
+                    base = cfg.runtime.base_branch
+                )
+            };
+            let cmd = format!(
+                "cd {} && {{ {inner}; }}",
+                shell_quote(&r.dir.to_string_lossy())
+            );
+            emitter.emit(Record::ExecBg(&["bash".into(), "-c".into(), cmd]));
+        }
     }
 
     if let Some(hook) = &cfg.hooks.post_cd {

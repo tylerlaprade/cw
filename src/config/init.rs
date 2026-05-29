@@ -203,8 +203,10 @@ const SCAFFOLD: &str = "
 # [workspace]
 # max_count   = 48           # cap on workspace count. Default: unlimited.
 # base_branch = \"develop\"    # trunk branch. Default: develop | main | master.
-# stem        = \"myproject\"  # workspace dir prefix. Default: repo-root basename
+# stem         = \"myproject\" # workspace dir prefix. Default: repo-root basename
 #                            # with any trailing _N stripped.
+# auto_restack = false        # bg-rebase onto base on workspace re-entry.
+#                            # Default: off (it rewrites local history).
 
 # ---------------------------------------------------------------------------
 # [integrations] — opt in/out of external tool integrations. Omit a key to let

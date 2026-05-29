@@ -754,6 +754,7 @@ mod tests {
                 max_count: Some(48),
                 base_branch: None,
                 stem: None,
+                auto_restack: false,
             },
             integrations: crate::config::schema::Integrations {
                 graphite: Some(true),
@@ -845,6 +846,7 @@ mod tests {
                 max_count: Some(max),
                 base_branch: None,
                 stem: None,
+                auto_restack: false,
             },
             integrations: crate::config::schema::Integrations {
                 graphite: Some(false),
