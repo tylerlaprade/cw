@@ -779,6 +779,8 @@ mod tests {
             restack: Default::default(),
             hooks: Default::default(),
             env: Default::default(),
+            cleanup: Default::default(),
+            triage: Default::default(),
             runtime: Runtime {
                 repo_root: Some(root.clone()),
                 config_path: None,
@@ -871,6 +873,8 @@ mod tests {
             restack: Default::default(),
             hooks: Default::default(),
             env: Default::default(),
+            cleanup: Default::default(),
+            triage: Default::default(),
             runtime: Runtime {
                 repo_root: Some(root.to_path_buf()),
                 config_path: None,
@@ -1023,6 +1027,7 @@ mod tests {
             suffixes: vec!["qa".into(), "stg".into()],
             clone: "postgres".into(),
             default_source_suffix: "qa".into(),
+            post_clone: None,
         }
     }
 

@@ -678,6 +678,7 @@ mod tests {
             suffixes: vec!["qa".into()],
             clone: "postgres".into(),
             default_source_suffix: "qa".into(),
+            post_clone: None,
         };
         assert!(expand_db_names(&db, 3).is_empty());
     }
@@ -689,6 +690,7 @@ mod tests {
             suffixes: vec!["qa".into(), "stg".into()],
             clone: "postgres".into(),
             default_source_suffix: "qa".into(),
+            post_clone: None,
         };
         assert_eq!(expand_db_names(&db, 3), vec!["app_3_qa", "app_3_stg"]);
     }

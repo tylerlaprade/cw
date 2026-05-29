@@ -31,14 +31,12 @@ pub fn find_stack_worktree(inside: &Path, target: &str, base: &str) -> Option<St
 
         // Sanity-check against Graphite's recorded parent (when gt is present):
         // if the parent isn't in the commit-based set, ancestry is stale (a
-        // partial rebase) — discard so we fall through to the slow path.
+        // partial rebase) — discard so we fall through to the slow path. The
+        // trunk is whatever `base` resolved to; no branch names are hard-coded
+        // (the original's `main`/`develop` literals were a company-specific leak).
         if gt_available() {
             if let Some(parent) = gt_parent(inside, target) {
-                if parent != base
-                    && parent != "main"
-                    && parent != "develop"
-                    && !stack_branches.contains(&parent)
-                {
+                if parent != base && !stack_branches.contains(&parent) {
                     stack_branches.clear();
                 }
             }

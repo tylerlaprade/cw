@@ -10,9 +10,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
-/// Hours of inactivity before a workspace with an open/draft PR is still
-/// eligible for cleanup. Mirrors `STALE_HOURS=48` in the legacy cleanup.sh.
-const STALE_HOURS: u64 = 48;
+/// Default hours of inactivity before a workspace with an open/draft PR is
+/// still eligible for cleanup. Overridable via `[cleanup] stale_hours`.
+/// Mirrors `STALE_HOURS=48` in the legacy cleanup.sh.
+const DEFAULT_STALE_HOURS: u64 = 48;
 
 pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -20,6 +21,8 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
     let Some(root) = cfg.runtime.repo_root.clone() else {
         anyhow::bail!("not inside a git repo");
     };
+    let stale_hours = cfg.cleanup.stale_hours.unwrap_or(DEFAULT_STALE_HOURS);
+    let protected = protected_branches(&cfg.runtime.base_branch, &cfg.cleanup.protected_branches);
 
     // I4: fetch+prune even on --dry-run so the stale/gone-branch preview is
     // accurate (the original cleanup.sh always fetched). It only updates remote-
@@ -36,11 +39,13 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
         .filter(|e| {
             e.dir != root
                 && e.number.is_some()
-                && (e.is_removable() || e.is_inactive(STALE_HOURS))
-                // A freshly-created workspace has no unique commits vs base
-                // and looks identical to an abandoned branch. Spare anything
-                // whose directory was created within STALE_HOURS.
-                && !e.is_fresh(STALE_HOURS)
+                // Durably-removable (merged/closed-PR/remote-gone/detached) are
+                // swept regardless of age — their work is already preserved.
+                // The freshness guard applies ONLY to transient-stale states
+                // (no-unique-commits / inactivity), which a brand-new `cw <desc>`
+                // workspace also exhibits — sparing those created within stale_hours.
+                && (e.is_removable_durable()
+                    || (e.is_transient_stale(stale_hours) && !e.is_fresh(stale_hours)))
         })
         .cloned()
         .collect();
@@ -49,7 +54,7 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
         println!("{} no stale workspaces", "✓".green());
     } else {
         for e in &stale {
-            print_candidate(e);
+            print_candidate(e, stale_hours);
         }
         println!();
     }
@@ -66,18 +71,17 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
                 force: args.force,
                 dry_run: false,
                 no_close_tab: false,
-                stale_hours: Some(STALE_HOURS),
+                stale_hours: Some(stale_hours),
             },
             emitter,
         )?;
     }
 
     // Prune local branches (merged / remote-gone / closed-PR) that aren't
-    // checked out in any worktree.
-    if !args.dry_run {
-        prune_branches(&root, &cfg.runtime.base_branch);
-        delete_closed_pr_branches(&root, &cfg.runtime.base_branch);
-    }
+    // checked out in any worktree. On --dry-run these preview the would-delete
+    // set instead of deleting (matching the legacy cleanup.sh).
+    prune_branches(&root, &cfg.runtime.base_branch, &protected, args.dry_run);
+    delete_closed_pr_branches(&root, &protected, args.dry_run);
 
     // Orphaned DBs (pattern exists but no {stem}_{N} dir).
     if let Some(db) = &cfg.databases {
@@ -97,7 +101,7 @@ pub fn run(args: CleanupArgs, emitter: &mut Emitter) -> Result<()> {
     Ok(())
 }
 
-fn print_candidate(e: &inventory::Entry) {
+fn print_candidate(e: &inventory::Entry, stale_hours: u64) {
     let branch_disp = e.branch.as_deref().unwrap_or("HEAD");
     if e.detached {
         println!("Detached worktree: {}", e.dir.display());
@@ -105,7 +109,7 @@ fn print_candidate(e: &inventory::Entry) {
         println!("Merged branch: {} ({})", e.dir.display(), branch_disp);
     } else if e.merged || e.no_unique_commits {
         println!("No unique commits: {} ({})", e.dir.display(), branch_disp);
-    } else if let Some(h) = e.inactive_hours.filter(|h| *h >= STALE_HOURS) {
+    } else if let Some(h) = e.inactive_hours.filter(|h| *h >= stale_hours) {
         println!("Inactive {}h: {} ({})", h, e.dir.display(), branch_disp);
     } else if e.pr_closed_or_merged.is_some() {
         println!("Merged branch: {} ({})", e.dir.display(), branch_disp);
@@ -114,10 +118,8 @@ fn print_candidate(e: &inventory::Entry) {
 
 /// Delete local branches fully merged into base OR whose remote was pruned,
 /// excluding protected branches and any branch currently checked out in a
-/// worktree.
-fn prune_branches(root: &Path, base: &str) {
-    let protected = protected_branches(base);
-
+/// worktree. On `dry_run`, print the would-delete set instead of deleting.
+fn prune_branches(root: &Path, base: &str, protected: &HashSet<String>, dry_run: bool) {
     let checked_out = worktree_branches(root);
     let merged_ref = remote_or_local_base(root, base);
     let merged = list_branches(
@@ -146,6 +148,13 @@ fn prune_branches(root: &Path, base: &str) {
     if to_delete.is_empty() {
         return;
     }
+    if dry_run {
+        println!("{} would delete {} stale branch(es):", "·".dimmed(), to_delete.len());
+        for b in &to_delete {
+            println!("    {}", b);
+        }
+        return;
+    }
     println!(
         "{} deleting {} stale branch(es)",
         "·".dimmed(),
@@ -160,8 +169,10 @@ fn prune_branches(root: &Path, base: &str) {
 }
 
 /// Delete local branches whose PR is closed (not merged — merged PRs are
-/// typically already handled via gone-upstream pruning).
-fn delete_closed_pr_branches(root: &Path, base: &str) {
+/// typically already handled via gone-upstream pruning). On `dry_run`, the
+/// would-delete branches are printed instead of deleted. `base` is unused here;
+/// protection comes from the prebuilt `protected` set.
+fn delete_closed_pr_branches(root: &Path, protected: &HashSet<String>, dry_run: bool) {
     let out = Command::new("gh")
         .args([
             "pr",
@@ -211,7 +222,6 @@ fn delete_closed_pr_branches(root: &Path, base: &str) {
         return;
     }
     let checked_out = worktree_branches(root);
-    let protected = protected_branches(base);
     for b in &closed_branches {
         if protected.contains(b.as_str()) || checked_out.contains(b) {
             continue;
@@ -226,6 +236,10 @@ fn delete_closed_pr_branches(root: &Path, base: &str) {
         if !ok {
             continue;
         }
+        if dry_run {
+            println!("{} would delete closed-PR branch: {}", "·".dimmed(), b);
+            continue;
+        }
         println!("{} deleting closed-PR branch: {}", "·".dimmed(), b);
         let _ = Command::new("git")
             .args(["branch", "-D", b])
@@ -234,14 +248,14 @@ fn delete_closed_pr_branches(root: &Path, base: &str) {
     }
 }
 
-/// Branches never pruned: the configured base plus the conventional trunk
-/// names (so we don't delete a trunk even if it isn't the configured base).
-fn protected_branches(base: &str) -> HashSet<String> {
-    let mut p: HashSet<String> = ["main", "master", "develop"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+/// Branches never pruned: the configured base, plus any `[cleanup]
+/// protected_branches`. No branch names are hard-coded — a generalized tool
+/// must not assume `main`/`develop` are special; the trunk is whatever `base`
+/// resolved to, and long-lived release/integration branches go in config.
+fn protected_branches(base: &str, extra: &[String]) -> HashSet<String> {
+    let mut p: HashSet<String> = HashSet::new();
     p.insert(base.to_string());
+    p.extend(extra.iter().cloned());
     p
 }
 
@@ -423,14 +437,19 @@ mod tests {
     use super::protected_branches;
 
     #[test]
-    fn protected_includes_base_and_trunks() {
-        // I1: a non-develop base (e.g. main) is protected, and the conventional
-        // trunks stay protected too — no hardcoded company-specific release branches.
-        let p = protected_branches("main");
+    fn protected_is_base_plus_config_no_hardcoded_trunks() {
+        // The configured base is always protected.
+        let p = protected_branches("main", &[]);
         assert!(p.contains("main"));
-        assert!(p.contains("master"));
-        assert!(p.contains("develop"));
-        // A custom base is protected.
-        assert!(protected_branches("trunk").contains("trunk"));
+        // No branch names are hard-coded: a non-base trunk name is NOT
+        // auto-protected (that was a company-specific leak). With base="main",
+        // "develop"/"master" are only protected if the user lists them.
+        assert!(!p.contains("develop"));
+        assert!(!p.contains("master"));
+        // A custom base is protected, and config entries are unioned in.
+        let p = protected_branches("trunk", &["release/qa".into(), "staging".into()]);
+        assert!(p.contains("trunk"));
+        assert!(p.contains("release/qa"));
+        assert!(p.contains("staging"));
     }
 }

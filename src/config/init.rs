@@ -42,9 +42,9 @@ pub fn run() -> Result<()> {
     let mut overrides: Vec<String> = Vec::new();
 
     let max_count = if is_tty {
-        // J6: propagate Ctrl-C via `?` (don't silently treat an interrupt as
-        // "unlimited"); surface a note when the input is non-numeric.
-        let raw = Text::new("Maximum workspace count (leave blank for unlimited):")
+        // J6: propagate Ctrl-C via `?` (don't silently treat an interrupt as a
+        // default); surface a note when the input is non-numeric.
+        let raw = Text::new("Maximum workspace count (blank = default 99):")
             .with_default("")
             .prompt()?;
         let raw = raw.trim();
@@ -55,7 +55,7 @@ pub fn run() -> Result<()> {
                 Ok(n) => Some(n),
                 Err(_) => {
                     eprintln!(
-                        "  {} ignoring non-numeric max_count {raw:?} (leaving unlimited)",
+                        "  {} ignoring non-numeric max_count {raw:?} (leaving default 99)",
                         "·".dimmed()
                     );
                     None
@@ -204,7 +204,9 @@ const SCAFFOLD: &str = "
 # [workspace] — numbering + branch basics.
 # ---------------------------------------------------------------------------
 # [workspace]
-# max_count   = 48           # cap on workspace count. Default: unlimited.
+# max_count   = 99           # cap on workspace count, and the threshold below
+#                            # which a bare number is a workspace (above it, a
+#                            # PR). Default: 99.
 # base_branch = \"develop\"    # trunk branch. Default: develop | main | master.
 # stem         = \"myproject\" # workspace dir prefix. Default: repo-root basename
 #                            # with any trailing _N stripped.
@@ -269,6 +271,8 @@ const SCAFFOLD: &str = "
 # suffixes              = [\"qa\", \"stg\", \"prod\"]
 # clone                 = \"postgres\"   # or \"none\"
 # default_source_suffix = \"qa\"
+# post_clone            = \"cd server && uv run manage.py migrate --noinput\"
+#                       # runs once after the clone, in the new workspace root.
 
 # ---------------------------------------------------------------------------
 # [restack] — hook script + conflict resolver.
@@ -276,6 +280,22 @@ const SCAFFOLD: &str = "
 # [restack]
 # hook     = \"./scripts/cw-restack-hook.sh\"  # runs after rebase, before commit.
 # resolver = \"claude\"                        # claude | codex | manual
+
+# ---------------------------------------------------------------------------
+# [cleanup] — stale-workspace sweep policy.
+# ---------------------------------------------------------------------------
+# [cleanup]
+# protected_branches = [\"release/qa\", \"staging\"]  # never pruned (base is always
+#                                                # protected; add long-lived ones).
+# stale_hours        = 48   # inactivity before an open-PR workspace is swept.
+
+# ---------------------------------------------------------------------------
+# [triage] — actionable PR + Jira dashboard.
+# ---------------------------------------------------------------------------
+# [triage]
+# jira_statuses = [\"To Do\", \"In Progress\"]  # statuses to surface. Default: those two.
+# jira_project  = \"ABC\"                      # default project when branch has no key.
+# jira_site     = \"acme.atlassian.net\"       # Atlassian host for clickable keys.
 
 # ---------------------------------------------------------------------------
 # [hooks] — lifecycle hooks. Each value is a shell snippet.

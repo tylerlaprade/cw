@@ -37,6 +37,26 @@ impl Entry {
             || self.pr_closed_or_merged.is_some()
     }
 
+    /// Removable for a *durable* reason: a detached worktree, a branch whose
+    /// remote was deleted, or a closed/merged PR. Each requires a prior
+    /// push+merge/close (or manual detach), so a freshly-created workspace can
+    /// never be in these states — the freshness guard must NOT apply here.
+    ///
+    /// Note `merged` (`git merge-base --is-ancestor branch base`) is *not*
+    /// durable: a brand-new branch off base is trivially an ancestor of base,
+    /// so it overlaps with `no_unique_commits` and must be freshness-guarded.
+    pub fn is_removable_durable(&self) -> bool {
+        self.detached || self.remote_gone || self.pr_closed_or_merged.is_some()
+    }
+
+    /// Removable only because it has no unique commits vs base yet (it's
+    /// fully-merged / an ancestor of base) — which a brand-new `cw <desc>`
+    /// workspace also looks like. The freshness guard applies here (and to
+    /// inactivity) to spare just-created workspaces.
+    pub fn is_transient_stale(&self, stale_hours: u64) -> bool {
+        self.merged || self.no_unique_commits || self.is_inactive(stale_hours)
+    }
+
     /// Treat as a cleanup candidate when idle longer than `stale_hours`.
     pub fn is_inactive(&self, stale_hours: u64) -> bool {
         self.inactive_hours.is_some_and(|h| h >= stale_hours)

@@ -25,6 +25,10 @@ pub struct Config {
     pub hooks: HooksCfg,
     #[serde(default)]
     pub env: EnvCfg,
+    #[serde(default)]
+    pub cleanup: CleanupCfg,
+    #[serde(default)]
+    pub triage: TriageCfg,
 
     /// Computed at runtime, not read from file.
     #[serde(skip)]
@@ -118,6 +122,10 @@ pub struct DatabasesCfg {
     pub clone: String,
     #[serde(default = "default_src_suffix")]
     pub default_source_suffix: String,
+    /// Shell command run once after the clone completes, in the new workspace
+    /// root, in the same detached setup phase (so a cloned DB can be migrated
+    /// up to the branch's schema before first use). `{n}`/`{stem}` substituted.
+    pub post_clone: Option<String>,
 }
 
 fn default_clone() -> String {
@@ -173,6 +181,35 @@ pub struct EnvStrip {
 pub struct EnvInject {
     pub file: String,
     pub line: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupCfg {
+    /// Extra branches `cw cleanup` must never delete, beyond the configured
+    /// base. Replaces the original tool's hard-coded `develop main release/qa
+    /// release/staging`. Exact names; long-lived release/integration branches
+    /// belong here so a merged-looking one isn't pruned.
+    #[serde(default)]
+    pub protected_branches: Vec<String>,
+    /// Hours of inactivity (last-commit age) before a workspace with an
+    /// open/draft PR is eligible for cleanup. Default 48 when unset.
+    pub stale_hours: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriageCfg {
+    /// Jira workflow statuses to surface as actionable. Default
+    /// `["To Do", "In Progress"]` (Jira built-ins) when unset — the original
+    /// hard-coded a company-custom `["Failed QA", "To Do"]`.
+    #[serde(default)]
+    pub jira_statuses: Vec<String>,
+    /// Default Jira project key for the ticket dashboard, used when the current
+    /// branch/PR has no inferable key (so `cw triage` works between branches).
+    pub jira_project: Option<String>,
+    /// Atlassian site host (e.g. "acme.atlassian.net") for clickable Jira keys.
+    pub jira_site: Option<String>,
 }
 
 /// Values populated by the loader, not from the file.
