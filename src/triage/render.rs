@@ -12,9 +12,10 @@ pub fn render(prs: &[ActionablePr], tickets: &[Ticket], verbose: bool, cols: usi
     if !tickets.is_empty() {
         println!("{}", "Jira".bold().underline());
         for t in tickets {
-            let status_c = match t.status.as_str() {
-                "Failed QA" => t.status.red().to_string(),
-                "To Do" => t.status.yellow().to_string(),
+            // Match case-insensitively (original lowercased before keying).
+            let status_c = match t.status.to_lowercase().as_str() {
+                "failed qa" => t.status.red().to_string(),
+                "to do" => t.status.yellow().to_string(),
                 _ => t.status.dimmed().to_string(),
             };
             println!(

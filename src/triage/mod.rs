@@ -27,8 +27,9 @@ pub fn run(args: TriageArgs) -> Result<()> {
         .or_else(|| current_branch_prefix(root))
         .unwrap_or_default();
 
-    // Fan out: PRs and tickets in parallel.
-    let (prs_res, tickets_res) = std::thread::scope(|s| {
+    // Fan out: PRs and tickets in parallel. Keep the raw join results so a
+    // panicking worker degrades to an error line instead of aborting triage.
+    let (prs_join, tickets_join) = std::thread::scope(|s| {
         let p = s.spawn(|| gh::list_my_open_prs(root, &base));
         let t = s.spawn(move || {
             if project.is_empty() {
@@ -37,18 +38,34 @@ pub fn run(args: TriageArgs) -> Result<()> {
                 jira::my_actionable_tickets(&project)
             }
         });
-        (p.join().unwrap(), t.join().unwrap())
+        (p.join(), t.join())
     });
 
     let mut errors = Vec::new();
-    let prs = prs_res.unwrap_or_else(|e| {
-        errors.push(format!("gh: {e:#}"));
-        Vec::new()
-    });
-    let tickets = tickets_res.unwrap_or_else(|e| {
-        errors.push(format!("jira: {e:#}"));
-        Vec::new()
-    });
+    let prs = match prs_join {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            errors.push(format!("gh: {e:#}"));
+            Vec::new()
+        }
+        Err(_) => {
+            errors.push("gh: worker thread panicked".to_string());
+            Vec::new()
+        }
+    };
+    let mut tickets = match tickets_join {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            errors.push(format!("jira: {e:#}"));
+            Vec::new()
+        }
+        Err(_) => {
+            errors.push("jira: worker thread panicked".to_string());
+            Vec::new()
+        }
+    };
+    // Sort tickets by key (matching the original `tickets.sort()`).
+    tickets.sort_by(|a, b| a.key.cmp(&b.key));
 
     // Classify PRs into actionable issues. Needs branch-protection required
     // checks + the GraphQL review-feedback payload, both keyed by owner/repo.
