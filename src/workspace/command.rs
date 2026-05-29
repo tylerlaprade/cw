@@ -271,7 +271,9 @@ fn do_next_number() -> Result<()> {
         .as_deref()
         .context("not inside a git repo")?;
     let parent = root.parent().context("repo root has no parent")?;
-    let (n, lock) = create::claim_number(&cfg, parent, std::path::Path::new("/tmp"))?;
+    // Per-repo claim lock dir (the repo's git dir), not global /tmp.
+    let lock_dir = root.join(".git");
+    let (n, lock) = create::claim_number(&cfg, parent, &lock_dir)?;
     lock.release();
     println!("{}", n);
     Ok(())

@@ -17,8 +17,9 @@ use std::time::{Duration, SystemTime};
 /// Lock dirs older than this are treated as crashed/abandoned and reclaimed.
 const STALE_LOCK_AGE: Duration = Duration::from_secs(60);
 
-/// RAII guard for the `/tmp/.devcli_{stem}_{n}_claim` lock dir. Removes the
-/// lock when dropped so the slot doesn't leak past the end of `create()`.
+/// RAII guard for a `.devcli_{stem}_{n}_claim` lock dir (created under the
+/// repo's git dir). Removes the lock when dropped so the slot doesn't leak
+/// past the end of `create()`.
 /// Without this, Rust cw used to leak lock dirs forever — every run masked
 /// the slot it claimed, so subsequent runs skipped past it and new workspaces
 /// piled up at the top of the range instead of filling the gaps.
@@ -106,7 +107,12 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
         cfg.runtime.base_branch.clone()
     };
 
-    let (number, _lock) = claim_number(cfg, parent_dir, Path::new("/tmp"))?;
+    // Claim locks live in the repo's git dir (shared across all worktrees), so
+    // concurrent `cw` runs in THIS repo coordinate while different repos — even
+    // with the same stem — never block each other. Tests isolate naturally,
+    // each using its own temp repo.
+    let lock_dir = root.join(".git");
+    let (number, _lock) = claim_number(cfg, parent_dir, &lock_dir)?;
     let dir = parent_dir.join(format!("{}_{}", cfg.runtime.stem, number));
     let existed = branch_exists(root, &branch)?;
 
@@ -179,8 +185,9 @@ fn print_ready_banner(cfg: &Config, number: u32, dir: &Path, setup_log: &Path) {
 /// Reserve the lowest-available workspace number and hold a `LockGuard` for
 /// it until the caller drops the guard. Mirrors Bash `find_next_number` +
 /// `claim_workspace_number` in `new-workspace.sh`: consider sibling dirs,
-/// `{tmp_dir}/{stem}_N`, `git worktree list`, and live per-slot locks as
-/// "in use"; reclaim lock dirs older than `STALE_LOCK_AGE`.
+/// `git worktree list`, and live per-slot locks (in `lock_dir`) as "in use";
+/// reclaim lock dirs older than `STALE_LOCK_AGE`. `lock_dir` is the repo's git
+/// dir in production so claims coordinate per-repo, not via a shared /tmp.
 pub fn claim_number(cfg: &Config, parent: &Path, tmp_dir: &Path) -> Result<(u32, LockGuard)> {
     let max = cfg.workspace.max_count.unwrap_or(99);
     let stem = cfg.runtime.stem.clone();

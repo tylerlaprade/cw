@@ -179,15 +179,12 @@ fn rust_reclaims_lock_that_bash_would_also_reclaim() {
     // Seed a *fresh* Rust-shaped lock — on a system with no other cw
     // process running, this should be masked as "live" and the claim picks
     // a higher number.
-    let lock = Path::new("/tmp/.devcli_condor_2_claim");
-    // Best-effort: if another real process holds this, we can't test this
-    // invariant cleanly. Skip gracefully.
-    if lock.exists() {
-        eprintln!("skipping: /tmp has live cw lock state outside our control");
-        return;
-    }
-    fs::create_dir(lock).unwrap();
-    let _cleanup = scopeguard(lock);
+    // Seed a *fresh* Rust-shaped lock in the repo's git dir — where cw now
+    // coordinates claims — so it's masked as "live" and the claim skips slot 2.
+    // The temp repo is exclusively ours, so no global-/tmp-state guard is needed.
+    let lock = repo.join(".git/.devcli_condor_2_claim");
+    fs::create_dir(&lock).unwrap();
+    let _cleanup = scopeguard(&lock);
 
     let n = rust_next_number(&repo);
     assert!(
