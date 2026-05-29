@@ -97,3 +97,68 @@ fn does_not_flag_fresh_no_unique_commits_workspace() {
     );
     assert!(ws.is_dir(), "workspace dir vanished during --dry-run");
 }
+
+#[test]
+fn removes_stale_no_unique_commits_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("condor");
+    init_repo(&repo);
+    commit_file(&repo, "README", "x\n", "root");
+
+    // A workspace on a branch with no unique commits vs develop is removable
+    // (its work is preserved on the base) — the real-deletion counterpart to
+    // the fresh-skip test above.
+    let ws = tmp.path().join("condor_6");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            ws.to_str().unwrap(),
+            "-b",
+            "br-6",
+            "develop",
+        ],
+    );
+
+    // Backdate the dir mtime well past the 48h fresh-skip so cleanup treats it
+    // as genuinely stale rather than just-created.
+    let touched = Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(&ws)
+        .status()
+        .unwrap();
+    assert!(touched.success(), "failed to backdate {}", ws.display());
+
+    // Non-dry-run cleanup: a CLEAN (no-unique-work, no active session) stale
+    // workspace is removed without --force.
+    let out = Command::cargo_bin("cw")
+        .unwrap()
+        .current_dir(&repo)
+        .env("PATH", "/usr/bin:/bin")
+        .args(["cleanup"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cw cleanup failed: {}",
+        combined_output(&out)
+    );
+
+    assert!(
+        !ws.exists(),
+        "stale workspace should have been removed:\n{}",
+        combined_output(&out)
+    );
+    // Its branch (no unique work) should be pruned too.
+    let branches = Command::new("git")
+        .args(["branch", "--list", "br-6"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+        "br-6 should have been deleted; still present:\n{}",
+        String::from_utf8_lossy(&branches.stdout)
+    );
+}
