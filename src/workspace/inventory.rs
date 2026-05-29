@@ -29,14 +29,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn is_removable(&self) -> bool {
-        self.detached
-            || self.merged
-            || self.remote_gone
-            || self.no_unique_commits
-            || self.pr_closed_or_merged.is_some()
-    }
-
     /// Removable for a *durable* reason: a detached worktree, a branch whose
     /// remote was deleted, or a closed/merged PR. Each requires a prior
     /// push+merge/close (or manual detach), so a freshly-created workspace can

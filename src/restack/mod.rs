@@ -25,13 +25,44 @@ pub fn run(args: RestackArgs, emitter: &mut Emitter) -> Result<()> {
     let stashed = if rebase_in_progress(&dir) {
         false
     } else {
-        autostash(&dir)?
+        let base = rebase_base(&cfg, &dir);
+        autostash(&dir, base.as_deref())?
     };
-    let out = run_loop(&cfg, &dir, &args);
-    if stashed {
+    // On success, finalize() restores the stash (before submit) and amends; so
+    // only restore here as a SAFETY NET for the error/bail paths, where
+    // finalize never ran and the user's work would otherwise stay stashed.
+    let out = run_loop(&cfg, &dir, &args, stashed);
+    if stashed && out.is_err() {
         restore_stash(&dir);
     }
     out
+}
+
+/// The ref the rebase lands on: the Graphite parent of the current branch when
+/// `gt` is in use (so a stacked branch checks against its real upstream), else
+/// the configured base branch.
+fn rebase_base(cfg: &Config, dir: &Path) -> Option<String> {
+    if graphite_enabled(cfg) {
+        if let Some(branch) = current_branch(dir) {
+            if let Some(parent) = crate::git::graphite::gt_parent(dir, &branch) {
+                return Some(parent);
+            }
+        }
+    }
+    Some(cfg.runtime.base_branch.clone())
+}
+
+fn current_branch(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!b.is_empty() && b != "HEAD").then_some(b)
 }
 
 /// Resolve the restack target, falling back to workspace creation when the
@@ -103,7 +134,7 @@ fn resolve_or_create(cfg: &Config, cwd: &Path, target: Option<&str>) -> Result<r
     })
 }
 
-fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
+fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs, stashed: bool) -> Result<()> {
     // Detached worktrees are restored when this guard drops — on every exit
     // path (success, conflict-bail, error), mirroring restack.sh's EXIT trap.
     let mut detached = DetachedWorktrees::new();
@@ -153,7 +184,7 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
                 break;
             }
             if gt_r_ok && !rebase_in_progress(dir) {
-                return finalize(cfg, dir);
+                return finalize(cfg, dir, stashed);
             }
             if !gt_r_ok && !rebase_in_progress(dir) {
                 anyhow::bail!(
@@ -172,7 +203,7 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
                 .current_dir(dir)
                 .status()?;
             if st.success() {
-                return finalize(cfg, dir);
+                return finalize(cfg, dir, stashed);
             }
             // D2: a failed `git rebase` that left NO rebase in progress is a
             // real failure (bad base, precondition), not conflicts to resolve.
@@ -186,7 +217,7 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
     // Resolution loop.
     loop {
         if !rebase_in_progress(dir) {
-            return finalize(cfg, dir);
+            return finalize(cfg, dir, stashed);
         }
         let unresolved = unresolved_files(dir)?;
         if unresolved.is_empty() {
@@ -258,12 +289,40 @@ fn run_loop(cfg: &Config, dir: &Path, args: &RestackArgs) -> Result<()> {
     }
 }
 
-fn finalize(cfg: &Config, dir: &Path) -> Result<()> {
+fn finalize(cfg: &Config, dir: &Path, stashed: bool) -> Result<()> {
+    // T4.10: rebasing onto a newer base can change lockfiles/manifests, leaving
+    // installed deps stale. Reinstall before restoring the stash so the amend
+    // (when submitting) folds in any lockfile changes too. Best-effort.
+    reinstall_deps(cfg, dir);
+
+    // T1.3: restore the autostash NOW — before submit — not after run_loop
+    // returns. Previously the stack was submitted first and the stash popped
+    // after, so autostashed work never reached the submitted PRs.
+    let popped = if stashed { restore_stash(dir) } else { false };
+
     // D5: auto-submit is opt-in. The original always ran `gt ss` (submit the
     // stack) after a restack, but that pushes branches and opens/updates PRs —
     // opinionated and requires Graphite auth, so a generic user shouldn't get
     // it by default. Enable with `[restack] submit = true`.
     if graphite_enabled(cfg) && cfg.restack.submit {
+        // T1.3: fold the restored working-tree changes (and any dep lockfile
+        // updates) into the branch tip with `gt modify -a` BEFORE submitting,
+        // so they're part of the submitted stack. Only when we're actually
+        // submitting — otherwise leave the popped changes uncommitted, matching
+        // the user's pre-restack state (least surprise).
+        if popped || stashed {
+            let st = Command::new("gt")
+                .args(["modify", "-a"])
+                .current_dir(dir)
+                .status();
+            if !matches!(st, Ok(s) if s.success()) {
+                eprintln!(
+                    "{} `gt modify -a` failed — restored changes are uncommitted; \
+                     commit them before they reach the stack",
+                    "⚠".yellow()
+                );
+            }
+        }
         let st = Command::new("gt")
             .args(["ss", "--no-interactive"])
             .current_dir(dir)
@@ -277,6 +336,46 @@ fn finalize(cfg: &Config, dir: &Path) -> Result<()> {
     }
     println!("{} restack complete", "✓".green());
     Ok(())
+}
+
+/// Reinstall dependencies after a rebase (lockfiles may have moved). Honors
+/// `[deps]` when configured, else autodetects, mirroring the create path.
+/// Best-effort: failures warn but never fail the restack.
+fn reinstall_deps(cfg: &Config, dir: &Path) {
+    let cmds: Vec<String> = if let Some(deps) = &cfg.deps {
+        deps.install
+            .iter()
+            .map(|i| format!("( cd {} && {} )", sh_quote(&i.dir), i.cmd))
+            .collect()
+    } else {
+        create::autodetect_dep_installs(dir)
+    };
+    if cmds.is_empty() {
+        return;
+    }
+    println!("{} reinstalling dependencies", "→".cyan());
+    let chain = cmds.join(" && ");
+    let st = Command::new("bash")
+        .arg("-c")
+        .arg(&chain)
+        .current_dir(dir)
+        .status();
+    if !matches!(st, Ok(s) if s.success()) {
+        eprintln!(
+            "{} dependency reinstall failed — run your installer manually",
+            "⚠".yellow()
+        );
+    }
+}
+
+fn sh_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+@=,:".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 /// Worktrees temporarily detached so `gt r` could move their branch. Restored
@@ -443,7 +542,7 @@ fn conflict_markers_present(path: &Path) -> Result<bool> {
     }))
 }
 
-fn autostash(dir: &Path) -> Result<bool> {
+fn autostash(dir: &Path, base: Option<&str>) -> Result<bool> {
     let out = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(dir)
@@ -451,6 +550,27 @@ fn autostash(dir: &Path) -> Result<bool> {
     if out.stdout.is_empty() {
         return Ok(false);
     }
+
+    // T1.4: fail fast if an uncommitted file also changes on the incoming side
+    // of the rebase. Blindly stashing those would guarantee a conflict on pop
+    // (surfacing only a generic warning). Tell the user to commit/stash first.
+    if let Some(base) = base {
+        let dirty = dirty_files(dir);
+        let incoming = incoming_files(dir, base);
+        let mut overlap: Vec<&String> = dirty.iter().filter(|f| incoming.contains(*f)).collect();
+        overlap.sort();
+        if !overlap.is_empty() {
+            eprintln!(
+                "{} these uncommitted files also change on the rebase's incoming side:",
+                "✗".red()
+            );
+            for f in &overlap {
+                eprintln!("  {f}");
+            }
+            anyhow::bail!("commit or stash them before restacking");
+        }
+    }
+
     let st = Command::new("git")
         .args(["stash", "push", "-u", "-m", "cw-restack-autostash"])
         .current_dir(dir)
@@ -458,16 +578,72 @@ fn autostash(dir: &Path) -> Result<bool> {
     Ok(st.success())
 }
 
-fn restore_stash(dir: &Path) {
+/// Files with uncommitted changes (unstaged + staged), as a set.
+fn dirty_files(dir: &Path) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for args in [
+        &["diff", "--name-only"][..],
+        &["diff", "--cached", "--name-only"][..],
+    ] {
+        if let Ok(out) = Command::new("git").args(args).current_dir(dir).output() {
+            if out.status.success() {
+                for l in String::from_utf8_lossy(&out.stdout).lines() {
+                    if !l.is_empty() {
+                        set.insert(l.to_string());
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Files changed on the incoming side of the rebase: `merge-base(HEAD, base)..base`.
+fn incoming_files(dir: &Path, base: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let mb = Command::new("git")
+        .args(["merge-base", "HEAD", base])
+        .current_dir(dir)
+        .output();
+    let Ok(mb) = mb else { return set };
+    if !mb.status.success() {
+        return set;
+    }
+    let merge_base = String::from_utf8_lossy(&mb.stdout).trim().to_string();
+    if merge_base.is_empty() {
+        return set;
+    }
+    if let Ok(out) = Command::new("git")
+        .args(["diff", "--name-only", &format!("{merge_base}..{base}")])
+        .current_dir(dir)
+        .output()
+    {
+        if out.status.success() {
+            for l in String::from_utf8_lossy(&out.stdout).lines() {
+                if !l.is_empty() {
+                    set.insert(l.to_string());
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Pop the autostash. Returns true if it popped cleanly (so the caller knows
+/// whether there are restored changes to amend/submit).
+fn restore_stash(dir: &Path) -> bool {
     let st = Command::new("git")
         .args(["stash", "pop"])
         .current_dir(dir)
         .status();
-    if !matches!(st, Ok(s) if s.success()) {
+    if matches!(st, Ok(s) if s.success()) {
+        true
+    } else {
         eprintln!(
             "{} cw-restack-autostash could not be popped cleanly; `git stash list` to recover",
             "⚠".yellow()
         );
+        false
     }
 }
 

@@ -116,7 +116,7 @@ fn branches_containing(inside: &Path, sha: &str) -> Vec<String> {
     }
 }
 
-fn gt_parent(inside: &Path, target: &str) -> Option<String> {
+pub(crate) fn gt_parent(inside: &Path, target: &str) -> Option<String> {
     let out = Command::new("gt")
         .args(["branch", "info", target])
         .current_dir(inside)
