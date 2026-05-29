@@ -29,6 +29,8 @@ pub struct Config {
     pub cleanup: CleanupCfg,
     #[serde(default)]
     pub triage: TriageCfg,
+    #[serde(default)]
+    pub claude: ClaudeCfg,
 
     /// Computed at runtime, not read from file.
     #[serde(skip)]
@@ -195,6 +197,17 @@ pub struct CleanupCfg {
     /// Hours of inactivity (last-commit age) before a workspace with an
     /// open/draft PR is eligible for cleanup. Default 48 when unset.
     pub stale_hours: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeCfg {
+    /// Merge Claude Code memories across this repo's worktrees: seed a new
+    /// workspace with the union of sibling worktrees' MEMORY.md on create, and
+    /// salvage a departing workspace's memories into the survivors before
+    /// teardown. Off by default — it reads/writes `~/.claude/projects/`.
+    #[serde(default)]
+    pub memory_merge: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

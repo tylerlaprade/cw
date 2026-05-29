@@ -298,6 +298,14 @@ const SCAFFOLD: &str = "
 # jira_site     = \"acme.atlassian.net\"       # Atlassian host for clickable keys.
 
 # ---------------------------------------------------------------------------
+# [claude] — Claude Code integration.
+# ---------------------------------------------------------------------------
+# [claude]
+# memory_merge = true   # seed new workspaces with, and salvage removed ones'
+#                       # Claude memories across this repo's worktrees.
+#                       # Default: off (reads/writes ~/.claude/projects/).
+
+# ---------------------------------------------------------------------------
 # [hooks] — lifecycle hooks. Each value is a shell snippet.
 # Env exposed to post_cd: DEVCLI_DIR, DEVCLI_BRANCH, DEVCLI_NUMBER.
 # ---------------------------------------------------------------------------

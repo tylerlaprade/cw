@@ -196,6 +196,11 @@ pub fn run(
             continue;
         }
 
+        // Salvage this workspace's Claude memories into the surviving worktrees
+        // before deletion (opt-in via `[claude] memory_merge`), so they aren't
+        // lost with the worktree.
+        crate::memory::salvage_before_remove(cfg, &p.dir);
+
         // Drop DBs in parallel.
         drop_databases(&p.databases);
 

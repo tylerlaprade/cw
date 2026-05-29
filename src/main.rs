@@ -10,6 +10,7 @@ mod util;
 
 mod cleanup;
 mod git;
+mod memory;
 mod restack;
 mod serve;
 mod triage;

@@ -137,6 +137,10 @@ pub fn create(cfg: &Config, cwd: &Path, opts: CreateOpts) -> Result<CreateResult
     kick_off_setup(&dir, cfg, &setup_log, number, existed, src_number)?;
     eprintln!("Background setup running (log: {})", setup_log.display());
 
+    // Seed the new workspace with sibling worktrees' Claude memories (opt-in via
+    // `[claude] memory_merge`) so a fresh checkout's agent isn't amnesiac.
+    crate::memory::seed_new_workspace(cfg, &dir);
+
     print_ready_banner(cfg, number, &dir, &setup_log);
 
     Ok(CreateResult {
@@ -876,6 +880,7 @@ mod tests {
             env: Default::default(),
             cleanup: Default::default(),
             triage: Default::default(),
+            claude: Default::default(),
             runtime: Runtime {
                 repo_root: Some(root.clone()),
                 config_path: None,
@@ -970,6 +975,7 @@ mod tests {
             env: Default::default(),
             cleanup: Default::default(),
             triage: Default::default(),
+            claude: Default::default(),
             runtime: Runtime {
                 repo_root: Some(root.to_path_buf()),
                 config_path: None,
