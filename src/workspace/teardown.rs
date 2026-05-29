@@ -123,48 +123,55 @@ pub fn run(
         return Ok(());
     }
 
-    // Run safety checks in parallel.
-    std::thread::scope(|s| {
-        let handles: Vec<_> = plans
-            .iter_mut()
-            .map(|p| s.spawn(|| safety_check(cfg, p)))
-            .collect();
-        for h in handles {
-            let _ = h.join();
-        }
-    });
+    // --force is "just nuke it": skip safety checks AND the verdict report
+    // entirely (the original made ZERO gh calls under FORCE and went straight to
+    // removal — this keeps `cw remove --force` offline-capable for numeric
+    // targets). Otherwise run the parallel safety checks + print the report.
+    let verdicts: Vec<Verdict> = if opts.force {
+        Vec::new()
+    } else {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = plans
+                .iter_mut()
+                .map(|p| s.spawn(|| safety_check(cfg, p)))
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        });
 
-    // Compute verdicts and print legacy-style report.
-    let verdicts: Vec<Verdict> = plans.iter().map(|p| verdict(p, opts)).collect();
-    for (p, v) in plans.iter().zip(verdicts.iter()) {
-        let branch_disp = p.branch.as_deref().unwrap_or("HEAD");
-        match v {
-            Verdict::Clean(reason) => {
-                println!(
-                    "  [{}] {}  {} ({}) — {}",
-                    p.number,
-                    "CLEAN".green(),
-                    p.dir.display(),
-                    branch_disp,
-                    reason
-                );
-            }
-            Verdict::Dirty(reason) => {
-                println!(
-                    "  [{}] {}  {} ({}) — {}",
-                    p.number,
-                    "DIRTY".red(),
-                    p.dir.display(),
-                    branch_disp,
-                    reason
-                );
-                if let Some(h) = &p.head_short {
-                    println!("         {}", h);
+        let verdicts: Vec<Verdict> = plans.iter().map(|p| verdict(p, opts)).collect();
+        for (p, v) in plans.iter().zip(verdicts.iter()) {
+            let branch_disp = p.branch.as_deref().unwrap_or("HEAD");
+            match v {
+                Verdict::Clean(reason) => {
+                    println!(
+                        "  [{}] {}  {} ({}) — {}",
+                        p.number,
+                        "CLEAN".green(),
+                        p.dir.display(),
+                        branch_disp,
+                        reason
+                    );
                 }
-                println!("  [{}] Skipping (use --force to override)", p.number);
+                Verdict::Dirty(reason) => {
+                    println!(
+                        "  [{}] {}  {} ({}) — {}",
+                        p.number,
+                        "DIRTY".red(),
+                        p.dir.display(),
+                        branch_disp,
+                        reason
+                    );
+                    if let Some(h) = &p.head_short {
+                        println!("         {}", h);
+                    }
+                    println!("  [{}] Skipping (use --force to override)", p.number);
+                }
             }
         }
-    }
+        verdicts
+    };
 
     if opts.dry_run {
         println!("{} --dry-run; not removing", "·".dimmed());
@@ -172,9 +179,10 @@ pub fn run(
     }
 
     let mut closed_tab_target = false;
-    for (p, v) in plans.iter().zip(verdicts.iter()) {
-        let is_dirty = matches!(v, Verdict::Dirty(_));
-        if !opts.force && is_dirty {
+    for (i, p) in plans.iter().enumerate() {
+        // Non-force: skip workspaces the safety check flagged DIRTY. Force: the
+        // verdicts vec is empty and every workspace is removed unconditionally.
+        if !opts.force && matches!(verdicts.get(i), Some(Verdict::Dirty(_))) {
             continue;
         }
 
@@ -555,6 +563,27 @@ fn drop_one(name: &str) {
     }
 }
 
+/// Stop every configured service for the workspace being removed, best-effort.
+/// Only services with a port+start build a `Ctx`; `processes::stop` then kills
+/// by pid-file / stop_patterns / `lsof -ti:PORT`, independent of the runtime's
+/// command name (so a Django/Flask backend is actually stopped).
+fn stop_workspace_services(cfg: &Config, p: &Plan) {
+    if cfg.services.is_empty() {
+        return;
+    }
+    let resolved = resolve::Resolved {
+        dir: p.dir.clone(),
+        number: Some(p.number),
+        branch: p.branch.clone(),
+        pr: p.pr,
+    };
+    for svc in &cfg.services {
+        if let Ok(ctx) = crate::serve::processes::Ctx::build(cfg, &resolved, svc) {
+            let _ = crate::serve::processes::stop(&ctx);
+        }
+    }
+}
+
 fn run_pre_remove_hook(cfg: &Config, p: &Plan) -> Result<()> {
     let Some(hook) = &cfg.hooks.pre_remove else {
         return Ok(());
@@ -710,7 +739,14 @@ fn remove_workspace_dir(cfg: &Config, p: &Plan, delete_branch: bool) -> Result<(
         .and_then(crate::git::worktree::main_worktree)
         .or_else(|| crate::git::worktree::main_worktree(&p.dir));
 
-    // Kill processes whose cwd is rooted in the workspace (dev servers, shells,
+    // Stop the workspace's configured dev servers first. The cwd-rooted kill
+    // below only matches shells/node by command name, so a Python/Ruby/etc.
+    // backend would survive (lingering, still bound to its port). processes::stop
+    // kills by pid-file, port-scoped patterns, AND `lsof -ti:PORT` — command-
+    // agnostic — releasing the port and file handles before removal.
+    stop_workspace_services(cfg, p);
+
+    // Kill remaining processes whose cwd is rooted in the workspace (shells,
     // `tail -f`) so they release file handles. Precise — by cwd, not a
     // command-line substring match that could hit unrelated processes.
     for pid in rooted_pids(&p.dir) {

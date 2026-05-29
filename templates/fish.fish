@@ -57,6 +57,24 @@ function cw
                 set _close 1
         end
     end
-    test $_close -eq 1; and kill -HUP %self 2>/dev/null
+    if test $_close -eq 1
+        # Walk up to the OUTERMOST shell (the tab/pane's login shell) and HUP it,
+        # so the tab still closes when cw runs from a nested or sub-shell. Falls
+        # back to the current fish if no shell ancestor is found.
+        set -l _p $fish_pid
+        set -l _top $fish_pid
+        while test "$_p" -gt 1
+            set -l _c (ps -o comm= -p $_p 2>/dev/null | string trim)
+            set _c (string replace -r '^.*/' '' -- $_c | string replace -r '^-' '')
+            if contains -- $_c zsh bash sh fish dash ksh
+                set _top $_p
+            end
+            set _p (ps -o ppid= -p $_p 2>/dev/null | string trim)
+            if test -z "$_p"
+                break
+            end
+        end
+        kill -HUP $_top 2>/dev/null
+    end
     return 0
 end

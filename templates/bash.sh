@@ -44,6 +44,20 @@ cw() {
             CLOSE_TAB) _close=1 ;;
         esac
     done
-    (( _close )) && kill -HUP $$ 2>/dev/null
+    if (( _close )); then
+        # Walk up to the OUTERMOST shell (the tab/pane's login shell) and HUP it,
+        # so the tab still closes when cw runs from a nested or sub-shell. The
+        # original (a child script) walked from $PPID; the wrapper IS the shell,
+        # so it walks from $$. Falls back to $$ if no shell ancestor is found.
+        local _p=$$ _top=$$ _c
+        while [[ "$_p" -gt 1 ]]; do
+            _c=$(ps -o comm= -p "$_p" 2>/dev/null)
+            _c=${_c##*/}; _c=${_c#-}
+            case "$_c" in zsh|bash|sh|fish|dash|ksh) _top=$_p ;; esac
+            _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+            [[ -z "$_p" ]] && break
+        done
+        kill -HUP "$_top" 2>/dev/null
+    fi
     return 0
 }
