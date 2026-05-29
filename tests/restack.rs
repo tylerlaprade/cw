@@ -248,6 +248,33 @@ exit 0
 }
 
 #[test]
+fn restack_unknown_branch_refuses_without_creating_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("condor");
+    init_repo(&repo);
+    commit_file(&repo, "README.md", "root\n", "root");
+
+    let out = run_cw(&repo, "/usr/bin:/bin", &[], &["restack", "typo-branch"]);
+    assert!(
+        !out.status.success(),
+        "expected unknown branch restack to fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("does not exist locally or on origin"),
+        "unexpected output:\n{combined}"
+    );
+    assert!(
+        !tmp.path().join("condor_1").exists(),
+        "restack typo must not create a phantom workspace"
+    );
+}
+
+#[test]
 fn restack_keeps_files_unmerged_when_markers_remain() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");

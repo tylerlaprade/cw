@@ -420,11 +420,21 @@ fn fetch_branch(inside: &Path, branch: &str) {
     if !has_origin {
         return;
     }
-    let _ = Command::new("git")
-        .args(["fetch", "origin", branch])
+    let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    let fetched = Command::new("git")
+        .args(["fetch", "origin", &refspec])
         .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(inside)
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !fetched {
+        let _ = Command::new("git")
+            .args(["fetch", "origin", branch])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .current_dir(inside)
+            .output();
+    }
 }
 
 fn add_worktree(

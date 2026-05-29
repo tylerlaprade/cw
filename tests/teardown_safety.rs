@@ -7,6 +7,7 @@
 #[path = "common/support.rs"]
 mod support;
 
+use std::fs;
 use support::{add_worktree, combined_output, commit_file, init_repo, run_cw, Runner};
 use tempfile::TempDir;
 
@@ -87,5 +88,51 @@ fn remove_refuses_dirty_workspace_without_force() {
             || combined.to_lowercase().contains("skipping")
             || combined.to_lowercase().contains("uncommitted"),
         "expected a dirty/skip notice; got:\n{combined}"
+    );
+}
+
+#[test]
+fn force_remove_numeric_orphan_still_drops_configured_databases() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("app");
+    init_repo(&repo);
+    commit_file(&repo, "README.md", "root\n", "root");
+    fs::write(
+        repo.join(".devcli.toml"),
+        r#"[workspace]
+stem = "app"
+
+[databases]
+pattern = "app_{n}_{suffix}"
+suffixes = ["qa"]
+clone = "postgres"
+"#,
+    )
+    .unwrap();
+
+    let mock_bin = tmp.path().join("bin");
+    fs::create_dir(&mock_bin).unwrap();
+    let dropdb_log = tmp.path().join("dropdb.log");
+    support::make_executable(
+        &mock_bin.join("dropdb"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DROPDB_LOG"
+exit 0
+"#,
+    );
+    let path = format!("{}:/usr/bin:/bin", mock_bin.display());
+
+    let out = run_cw(
+        Runner::Rust,
+        &repo,
+        &path,
+        &[("DROPDB_LOG", dropdb_log.to_str().unwrap())],
+        &["remove", "--force", "7"],
+    );
+    assert!(out.status.success(), "{}", combined_output(&out));
+    let log = fs::read_to_string(&dropdb_log).unwrap();
+    assert!(
+        log.contains("--if-exists app_7_qa"),
+        "expected orphan DB drop for workspace 7, got:\n{log}"
     );
 }

@@ -54,6 +54,44 @@ fn kill_port(port: u16) {
 }
 
 #[test]
+fn npm_start_autodetect_exports_port_env() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("startenv");
+    fs::create_dir(&repo).unwrap();
+    Command::new("git")
+        .args(["init", "--initial-branch=develop", repo.to_str().unwrap()])
+        .status()
+        .unwrap();
+    git(&repo, &["config", "user.email", "t@t.local"]);
+    git(&repo, &["config", "user.name", "t"]);
+    git(&repo, &["config", "commit.gpgsign", "false"]);
+    fs::write(
+        repo.join("package.json"),
+        r#"{"scripts":{"start":"react-scripts start"}}"#,
+    )
+    .unwrap();
+    git(&repo, &["add", "package.json"]);
+    git(&repo, &["commit", "-m", "init", "--quiet"]);
+
+    let out = Command::cargo_bin("cw")
+        .unwrap()
+        .current_dir(&repo)
+        .env("PATH", "/usr/bin:/bin")
+        .args(["config", "show"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("start = \"npm start\""), "{stdout}");
+    assert!(stdout.contains("PORT = \"{port}\""), "{stdout}");
+}
+
+#[test]
 fn serve_open_waits_for_frontend_port() {
     // Needs python3 (the mock dev server) + nc (the mock `open` readiness probe)
     // in the sandboxed PATH; skip rather than fail where they're absent.

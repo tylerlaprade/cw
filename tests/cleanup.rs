@@ -162,3 +162,67 @@ fn removes_stale_no_unique_commits_workspace() {
         String::from_utf8_lossy(&branches.stdout)
     );
 }
+
+#[test]
+fn stale_status_uses_remote_base_when_local_base_is_stale() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("condor");
+    let origin = tmp.path().join("origin.git");
+
+    let st = Command::new("git")
+        .args(["init", "--bare", origin.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(st.success());
+    init_repo(&repo);
+    commit_file(&repo, "README", "x\n", "root");
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&repo, &["push", "-u", "origin", "develop"]);
+
+    git(
+        &repo,
+        &["checkout", "-b", "feature/merged-remotely", "--quiet"],
+    );
+    commit_file(&repo, "feature.txt", "done\n", "feature");
+    git(&repo, &["push", "origin", "HEAD:develop"]);
+    git(&repo, &["checkout", "develop", "--quiet"]);
+
+    let ws = tmp.path().join("condor_8");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            ws.to_str().unwrap(),
+            "feature/merged-remotely",
+        ],
+    );
+    let touched = Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(&ws)
+        .status()
+        .unwrap();
+    assert!(touched.success(), "failed to backdate {}", ws.display());
+
+    let out = Command::cargo_bin("cw")
+        .unwrap()
+        .current_dir(&repo)
+        .env("PATH", "/usr/bin:/bin")
+        .args(["cleanup", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cw cleanup --dry-run failed: {}",
+        combined_output(&out)
+    );
+
+    let text = combined_output(&out);
+    assert!(
+        text.contains("No unique commits") && text.contains("feature/merged-remotely"),
+        "workspace merged into origin/develop should be stale even when local develop is stale:\n{text}"
+    );
+}
