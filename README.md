@@ -1,8 +1,7 @@
 # cw
 
-Numbered-workspace dev CLI. Git worktrees, local services, rebase/restack,
-teardown, and an actionable-work dashboard — all in one binary + a ~30-line
-shell wrapper.
+Creates isolated Git workspaces with separate services, ports, and database
+clones.
 
 Works on any repo that uses the `{stem}_{N}` sibling-directory convention.
 Configuration is largely autodetected; a `.devcli.toml` at repo root is

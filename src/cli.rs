@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "cw",
     version,
-    about = "Numbered-workspace dev-CLI",
+    about = "Creates isolated Git workspaces with separate services, ports, and database clones.",
     disable_help_subcommand = true
 )]
 pub struct Cli {
